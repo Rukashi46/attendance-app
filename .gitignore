@@ -1,0 +1,6 @@
+node_modules/
+android/
+ios/
+www/lib/xlsx.full.min.js
+*.log
+.DS_Store

@@ -1,0 +1,9 @@
+{
+  "appId": "com.cr.attendance",
+  "appName": "CR Attendance",
+  "webDir": "www",
+  "backgroundColor": "#0a0a0f",
+  "android": {
+    "allowMixedContent": false
+  }
+}

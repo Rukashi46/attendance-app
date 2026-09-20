@@ -1,0 +1,25 @@
+{
+  "name": "cr-attendance",
+  "version": "1.0.0",
+  "description": "Class Representative Attendance Management App (Capacitor + offline-first web app)",
+  "scripts": {
+    "dev": "serve -l 3001 www",
+    "start": "serve -l 3001 www",
+    "postinstall": "node scripts/copy-xlsx.js",
+    "sync": "npx cap sync android",
+    "build:apk": "npx cap sync android && cd android && .\\gradlew assembleDebug",
+    "open:android": "npx cap open android",
+    "add:android": "npx cap add android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/filesystem": "^6.0.1",
+    "@capacitor/share": "^6.0.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2",
+    "serve": "^14.2.6"
+  }
+}
