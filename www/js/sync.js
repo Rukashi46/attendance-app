@@ -34,8 +34,20 @@ const SyncEngine = (() => {
 
   async function loadConfig() {
     const saved = await DB.getMeta('syncConfig', null);
-    if (saved) syncConfig = { ...syncConfig, ...saved };
-    status = syncConfig.enabled && syncConfig.syncKey ? (navigator.onLine ? 'synced' : 'offline') : 'unconfigured';
+    if (saved) {
+      // Normalize field names — older saves used key/url/auto aliases
+      syncConfig = {
+        ...syncConfig,
+        ...saved,
+        syncKey:     saved.syncKey     || saved.key  || '',
+        endpointUrl: saved.endpointUrl || saved.url  || '',
+        autoSync:    saved.autoSync    !== undefined ? saved.autoSync
+                   : saved.auto       !== undefined ? saved.auto : true,
+      };
+    }
+    status = syncConfig.enabled && syncConfig.syncKey
+      ? (navigator.onLine ? 'synced' : 'offline')
+      : 'unconfigured';
     notify();
   }
 
@@ -47,14 +59,15 @@ const SyncEngine = (() => {
   }
 
   // Cloud endpoint resolver
-  // Uses a resilient JSON relay if no custom endpoint is supplied
+  // Default: jsonstore.io — free, no-auth JSON key-value store.
+  // The sync key the user enters becomes the storage path, so all devices
+  // sharing the same key read and write the same cloud document.
   function getEndpoint() {
-    if (syncConfig.endpointUrl && syncConfig.endpointUrl.trim()) {
-      return syncConfig.endpointUrl.trim();
+    if (syncConfig.endpointUrl && syncConfig.endpointUrl.trim().startsWith('http')) {
+      return { url: syncConfig.endpointUrl.trim(), isCustom: true };
     }
-    // Reliable key-based cloud relay
-    const key = encodeURIComponent(syncConfig.syncKey.trim());
-    return `https://api.restful-api.dev/objects?key=${key}`;
+    const safeKey = syncConfig.syncKey.trim().toLowerCase().replace(/[^a-z0-9]/g, '-');
+    return { url: `https://www.jsonstore.io/${encodeURIComponent(safeKey)}`, isCustom: false };
   }
 
   // Prepare full sync payload
@@ -134,7 +147,7 @@ const SyncEngine = (() => {
     return newCount;
   }
 
-  // Perform full synchronization
+  // Perform full synchronization — pull → merge → push
   async function syncNow() {
     if (!syncConfig.enabled || !syncConfig.syncKey) {
       return { success: false, message: 'Please set a Class Sync Key in Settings first.' };
@@ -149,50 +162,68 @@ const SyncEngine = (() => {
     notify();
 
     try {
-      const localPayload = await gatherLocalData();
+      const { url: endpoint, isCustom } = getEndpoint();
       const storageKey = `cr_sync_${syncConfig.syncKey.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-
-      // In-browser local storage bridge for cross-tab/PWA sync, and remote cloud relay
       let mergedCount = 0;
-      const remoteJson = localStorage.getItem(storageKey);
-      if (remoteJson) {
-        try {
-          const remote = JSON.parse(remoteJson);
-          mergedCount = await mergeRemoteData(remote);
-        } catch (e) { console.warn('Local merge error:', e); }
+
+      // ── PULL ──────────────────────────────────────────────────────────
+      try {
+        // 1. Same-browser cross-tab via localStorage
+        const localJson = localStorage.getItem(storageKey);
+        if (localJson) {
+          try { mergedCount += await mergeRemoteData(JSON.parse(localJson)); } catch (e) {}
+        }
+
+        // 2. Cloud relay — GET the shared document
+        const pullRes = await fetch(endpoint, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+        });
+        if (pullRes.ok) {
+          const raw = await pullRes.json().catch(() => null);
+          // jsonstore.io wraps payload: { "result": {...}, "ok": true }
+          // Custom endpoints are expected to return the data directly
+          const remoteData = isCustom ? raw : (raw?.result ?? null);
+          if (remoteData && remoteData.version) {
+            mergedCount += await mergeRemoteData(remoteData);
+          }
+        }
+      } catch (pullErr) {
+        console.warn('Sync pull error (will still push):', pullErr);
       }
 
-      // Save latest unified dataset
+      // ── PUSH ──────────────────────────────────────────────────────────
       const unified = await gatherLocalData();
-      localStorage.setItem(storageKey, JSON.stringify(unified));
 
-      // If a custom cloud endpoint URL is provided (e.g. webhook, Supabase, Google Apps Script)
-      if (syncConfig.endpointUrl && syncConfig.endpointUrl.trim().startsWith('http')) {
-        try {
-          const res = await fetch(syncConfig.endpointUrl.trim(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(unified),
-          });
-          if (res.ok) {
-            const remoteData = await res.json().catch(() => null);
-            if (remoteData) await mergeRemoteData(remoteData);
-          }
-        } catch (netErr) {
-          console.warn('Custom endpoint sync failed:', netErr);
-        }
+      // Update localStorage cache for cross-tab sync
+      try { localStorage.setItem(storageKey, JSON.stringify(unified)); } catch (e) {}
+
+      // Push merged dataset to cloud relay
+      try {
+        await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(unified),
+        });
+      } catch (pushErr) {
+        console.warn('Sync push error:', pushErr);
       }
 
       syncConfig.lastSync = new Date().toISOString();
       await DB.setMeta('syncConfig', syncConfig);
       status = 'synced';
       notify();
-      return { success: true, message: `Sync successful! ${mergedCount > 0 ? `${mergedCount} updates merged.` : 'All up to date.'}` };
+      return {
+        success: true,
+        message: mergedCount > 0
+          ? `Synced! ${mergedCount} new record(s) pulled from other devices.`
+          : 'Synced — already up to date.',
+      };
     } catch (err) {
       console.error('Sync failed:', err);
       status = 'error';
       notify();
-      return { success: false, message: 'Sync encountered an error: ' + err.message };
+      return { success: false, message: 'Sync error: ' + err.message };
     }
   }
 

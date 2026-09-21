@@ -705,6 +705,17 @@ const Render = (() => {
   }
 
   function settings(d) {
+    const sc = d.syncConfig || {};
+    // Format last-sync timestamp for display
+    let lastSyncLabel = 'Not synced yet';
+    if (sc.lastSync) {
+      try {
+        const dt = new Date(sc.lastSync);
+        lastSyncLabel = 'Last synced: ' + dt.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+          + ' ' + dt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+      } catch (e) { lastSyncLabel = sc.lastSync.slice(0, 16).replace('T', ' '); }
+    }
+    const dotColor = sc.syncKey ? 'var(--present)' : '#555';
     return `
     ${topbar('Settings', { back: true })}
     <div class="content">
@@ -713,22 +724,34 @@ const Render = (() => {
         ${['system','light','dark'].map(t => `<span class="chip ${d.theme===t?'active':''}" data-action="set-theme" data-value="${t}">${t[0].toUpperCase()+t.slice(1)}</span>`).join('')}
       </div>
 
-      <div class="section-title">Online Cloud Sync</div>
+      <div class="section-title">🔄 Cloud Sync</div>
       <div class="card">
-        <p class="small muted">Sync your attendance database across devices or peer CRs in real time when connected online.</p>
-        <label style="margin-top:0">Sync Room / Key</label>
-        <input id="sync-key" placeholder="e.g. cse-3a-2026" value="${esc(d.syncConfig?.key||'')}" />
-        <label>Cloud Server URL (optional)</label>
-        <input id="sync-url" placeholder="https://your-server.com (optional)" value="${esc(d.syncConfig?.url||'')}" />
+        <p class="small muted" style="margin-top:0">Enter the same <b>Sync Key</b> on every device to keep attendance in sync automatically. No account needed.</p>
+        <label style="margin-top:0">Sync Key <span class="muted small">(shared across all your devices)</span></label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="sync-key" placeholder="e.g. cse-3a-2026-secret" value="${esc(sc.syncKey||'')}" style="flex:1;margin:0" />
+          <button class="btn" data-action="copy-sync-key" style="padding:0 14px;height:44px;flex-shrink:0;font-size:18px" title="Copy sync key">📋</button>
+        </div>
+        <label style="margin-top:14px">Custom Server URL <span class="muted small">(optional — leave blank to use built-in relay)</span></label>
+        <input id="sync-url" placeholder="https://your-server.com or Google Apps Script URL" value="${esc(sc.endpointUrl||'')}" />
         <div class="row between" style="margin-top:12px">
           <span class="small">Auto-sync when connected</span>
-          <input type="checkbox" id="sync-auto" ${d.syncConfig?.auto!==false?'checked':''} style="width:auto;margin:0" />
+          <input type="checkbox" id="sync-auto" ${sc.autoSync!==false?'checked':''} style="width:auto;margin:0" />
         </div>
         <div class="btn-row" style="margin-top:14px">
-          <button class="btn primary block" data-action="save-sync-config">Save Sync Settings</button>
+          <button class="btn primary block" data-action="save-sync-config">Save &amp; Sync</button>
           <button class="btn block" data-action="sync-now">Sync Now 🔄</button>
         </div>
-        <div class="small muted" style="margin-top:10px" id="sync-status-text">Status: ${esc(d.syncConfig?.lastSync ? 'Last synced ' + Render.fmtDate(d.syncConfig.lastSync.slice(0,10)) + ' ' + d.syncConfig.lastSync.slice(11,16) : 'Ready')}</div>
+        <div class="small" style="margin-top:10px;display:flex;align-items:center;gap:6px" id="sync-status-text">
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};flex-shrink:0"></span>
+          ${sc.syncKey ? esc(lastSyncLabel) : 'Not configured — enter a Sync Key above'}
+        </div>
+        <div class="small muted" style="margin-top:10px;border-top:1px solid var(--border,#2a2a35);padding-top:10px">
+          <b>How to sync to another device:</b><br>
+          1. Enter the same Sync Key on Device B<br>
+          2. Tap <b>Save &amp; Sync</b> on Device B<br>
+          3. Data merges automatically — no data is lost.
+        </div>
       </div>
 
       <div class="section-title">Class setup</div>

@@ -117,11 +117,42 @@
     cache.classInfo = await DB.getMeta('classInfo', {});
     cache.lastImport = await DB.getMeta('lastImport', null);
     cache.allocatedPeriods = await DB.getMeta('allocatedPeriods', {});
-    cache.syncConfig = await DB.getMeta('syncConfig', { enabled: false, syncKey: '', autoSync: true });
+    // Normalize syncConfig field names (older saves used key/url/auto aliases)
+    const sc = await DB.getMeta('syncConfig', null) || {};
+    cache.syncConfig = {
+      enabled:     !!sc.enabled,
+      syncKey:     sc.syncKey     || sc.key  || '',
+      endpointUrl: sc.endpointUrl || sc.url  || '',
+      autoSync:    sc.autoSync    !== undefined ? sc.autoSync
+                 : sc.auto       !== undefined ? sc.auto : true,
+      lastSync:    sc.lastSync    || null,
+    };
     applyTheme();
     if (window.SyncEngine && !window.SyncEngine._hasInit) {
       window.SyncEngine._hasInit = true;
       SyncEngine.init();
+      // Live status indicator — updates the dot + text in Settings without a full re-render
+      SyncEngine.onStatusChange((s) => {
+        const el = document.getElementById('sync-status-text');
+        if (!el) return;
+        const dotColor = {
+          synced:       'var(--present)',
+          syncing:      'var(--warn, #f59e0b)',
+          offline:      '#666',
+          error:        'var(--absent)',
+          unconfigured: '#444',
+        }[s.status] || '#444';
+        const label = {
+          syncing:      'Syncing…',
+          synced:       s.lastSync
+            ? 'Last synced: ' + new Date(s.lastSync).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+            : 'Synced',
+          offline:      'Offline — changes saved locally',
+          error:        'Sync error — tap Sync Now to retry',
+          unconfigured: 'Not configured — enter a Sync Key above',
+        }[s.status] || 'Unknown';
+        el.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};flex-shrink:0"></span> ${label}`;
+      });
     }
   }
 
@@ -469,21 +500,34 @@
     }
 
     if (action === 'save-sync-config') {
-      const syncKey = (document.getElementById('sync-key')?.value || '').trim();
+      const syncKey    = (document.getElementById('sync-key')?.value  || '').trim();
       const endpointUrl = (document.getElementById('sync-url')?.value || '').trim();
-      const autoSync = !!document.getElementById('sync-auto')?.checked;
-      const enabled = !!syncKey;
-      cache.syncConfig = { enabled, syncKey, endpointUrl, autoSync, key: syncKey, url: endpointUrl, auto: autoSync };
+      const autoSync   = !!document.getElementById('sync-auto')?.checked;
+      const enabled    = !!syncKey;
+      cache.syncConfig = { enabled, syncKey, endpointUrl, autoSync, lastSync: cache.syncConfig?.lastSync || null };
       if (window.SyncEngine) {
         await SyncEngine.saveConfig(cache.syncConfig);
         const res = await SyncEngine.syncNow();
-        await loadCache(); // pick up the lastSync timestamp SyncEngine just persisted
+        await loadCache();
         showToast(res.message, res.success ? 'success' : 'error');
       } else {
         await DB.setMeta('syncConfig', cache.syncConfig);
         showToast('Sync settings saved.', 'success');
       }
       viewSettings();
+      return;
+    }
+
+    if (action === 'copy-sync-key') {
+      const key = (document.getElementById('sync-key')?.value || cache.syncConfig?.syncKey || '').trim();
+      if (!key) { showToast('Enter a Sync Key first.', 'error'); return; }
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(key)
+          .then(() => showToast('Sync key copied! 📋', 'success'))
+          .catch(() => showToast('Copy manually: ' + key, 'info', 5000));
+      } else {
+        showToast('Your key: ' + key, 'success', 6000);
+      }
       return;
     }
 
