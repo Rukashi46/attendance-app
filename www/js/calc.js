@@ -118,9 +118,11 @@ const Calc = (() => {
     return { byStudent, bySubject, byDate, conductedBySubject };
   }
 
+  // NOTE: allocatedPeriods is keyed ONLY by subject code (e.g. { AMED: 60 }).
+  // There is deliberately no student-level or class-wide default quota here —
+  // quota is a property of a subject, never of a student or the class overall.
   function studentOverall(stats, studentId, target = 75, allocatedPeriods = {}) {
     const st = stats.byStudent.get(studentId);
-    const defaultAlloc = allocatedPeriods.default || allocatedPeriods['*'] || 0;
     if (!st) {
       return {
         present: 0, absent: 0, total: 0, pct: null,
@@ -134,7 +136,7 @@ const Calc = (() => {
       const subTotal = v.p + v.a;
       const subPct = pct(v.p, v.a);
       const conducted = stats.conductedBySubject?.get(code)?.size || subTotal;
-      const subAlloc = allocatedPeriods[code] || defaultAlloc;
+      const subAlloc = allocatedPeriods[code] || 0;
       subjects[code] = {
         code,
         present: v.p,
@@ -168,8 +170,8 @@ const Calc = (() => {
   function subjectSummary(stats, code, target = 75, allocatedPeriods = {}) {
     const su = stats.bySubject.get(code);
     const conducted = stats.conductedBySubject?.get(code)?.size || 0;
-    const defaultAlloc = allocatedPeriods.default || allocatedPeriods['*'] || 0;
-    const allocated = allocatedPeriods[code] || defaultAlloc || 0;
+    // Quota is a per-subject property only — no class-wide/default fallback.
+    const allocated = allocatedPeriods[code] || 0;
     if (!su) {
       return {
         code,

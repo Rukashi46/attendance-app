@@ -47,14 +47,14 @@ const ImageExport = (() => {
     return w;
   }
 
-  function getStatusColors(pct, isDark = true) {
+  function getStatusColors(pct, isDark = true, target = 75) {
     if (pct === null || pct === undefined) {
       return { bg: isDark ? 'rgba(156,163,175,0.15)' : '#f3f4f6', fg: '#9ca3af', text: 'No Data' };
     }
-    if (pct >= 75) {
+    if (pct >= target) {
       return { bg: isDark ? 'rgba(52,211,153,0.2)' : '#dcfce7', fg: isDark ? '#34d399' : '#166534', text: 'Safe' };
     }
-    if (pct >= 65) {
+    if (pct >= target - 10) {
       return { bg: isDark ? 'rgba(251,191,36,0.2)' : '#fef3c7', fg: isDark ? '#fbbf24' : '#92400e', text: 'Warning' };
     }
     return { bg: isDark ? 'rgba(248,113,113,0.2)' : '#fee2e2', fg: isDark ? '#f87171' : '#991b1b', text: 'Shortage' };
@@ -63,7 +63,7 @@ const ImageExport = (() => {
   // ------------------------------------------------------------------
   // 1. Student Report Card Image
   // ------------------------------------------------------------------
-  function generateStudentCard(student, stats, subjectNames = {}, classInfo = {}, isDark = true) {
+  function generateStudentCard(student, stats, subjectNames = {}, classInfo = {}, isDark = true, threshold = 75) {
     const W = 800;
     const subEntries = Object.entries(stats.subjects || {}).sort((a, b) => a[0].localeCompare(b[0]));
     const rowH = 46;
@@ -122,7 +122,7 @@ const ImageExport = (() => {
       {
         label: 'OVERALL ATTENDANCE',
         val: stats.pct !== null ? `${stats.pct.toFixed(1)}%` : '—',
-        color: stats.pct >= 75 ? '#34d399' : (stats.pct >= 65 ? '#fbbf24' : '#f87171'),
+        color: stats.pct >= threshold ? '#34d399' : (stats.pct >= threshold - 10 ? '#fbbf24' : '#f87171'),
       },
       {
         label: 'PERIODS ATTENDED / TOTAL',
@@ -154,13 +154,13 @@ const ImageExport = (() => {
     // Overall Status banner & Margin
     const bannerY = 230;
     const m = stats.margin || {};
-    let statusTxt = 'TARGET: 75% MINIMUM';
+    let statusTxt = `TARGET: ${threshold}% MINIMUM`;
     if (m.type === 'safe') {
       statusTxt = m.count > 0 ? `STATUS: SAFE • Can safely miss ${m.count} class(es)` : 'STATUS: SAFE • On edge (0 margin)';
     } else if (m.type === 'need') {
       statusTxt = `ATTENTION: Shortage • Must attend next ${m.count} class(es) consecutive`;
     }
-    const colors = getStatusColors(stats.pct, isDark);
+    const colors = getStatusColors(stats.pct, isDark, threshold);
     drawBadge(ctx, statusTxt, 44, bannerY + 16, colors.bg, colors.fg, 12);
 
     // Subject Breakdown Table Header
@@ -208,26 +208,23 @@ const ImageExport = (() => {
 
         // Percentage badge
         const pStr = v.pct !== null ? `${v.pct.toFixed(1)}%` : '—';
-        const pColors = getStatusColors(v.pct, isDark);
+        const pColors = getStatusColors(v.pct, isDark, threshold);
         drawBadge(ctx, pStr, 605, curY + 26, pColors.bg, pColors.fg, 11);
 
-        // Margin text & semester quota
-        const sm = v.margin || {};
+        // Margin text: ONE number only, and only ever the quota-aware one.
+        // If this subject has no semester quota configured, show a plain
+        // "—" rather than fabricating a number from a different formula —
+        // this is the same figure (and the same rule) shown in the app UI.
         let mText = '—';
         let mColor = textDim;
-        if (v.semesterMargin && v.allocated) {
-          mText = v.semesterMargin.text || (sm.type === 'safe' ? `+${sm.count}` : `-${sm.count}`);
+        if (v.allocated && v.semesterMargin) {
+          mText = v.semesterMargin.text;
           mColor = v.semesterMargin.possible ? '#34d399' : '#f87171';
-        } else if (sm.type === 'safe') {
-          mText = sm.count > 0 ? `+${sm.count}` : '0';
-          mColor = '#34d399';
-        } else if (sm.type === 'need') {
-          mText = `-${sm.count}`;
-          mColor = '#f87171';
         }
         ctx.fillStyle = mColor;
-        ctx.font = '700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-        ctx.fillText(mText, 700, curY + 28);
+        ctx.font = '700 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+        const mTrunc = mText.length > 20 ? mText.slice(0, 18) + '…' : mText;
+        ctx.fillText(mTrunc, 700, curY + 28);
 
         curY += rowH;
       });
@@ -247,7 +244,7 @@ const ImageExport = (() => {
   // ------------------------------------------------------------------
   // 2. Subject Breakdown Card Image
   // ------------------------------------------------------------------
-  function generateSubjectCard(subject, summary, classInfo = {}, isDark = true) {
+  function generateSubjectCard(subject, summary, classInfo = {}, isDark = true, threshold = 75) {
     const W = 800;
     const students = summary.students || [];
     const rowH = 42;
@@ -298,11 +295,11 @@ const ImageExport = (() => {
       {
         label: 'CLASS AVERAGE',
         val: summary.pct !== null ? `${summary.pct.toFixed(1)}%` : '—',
-        color: summary.pct >= 75 ? '#34d399' : '#fbbf24',
+        color: summary.pct >= threshold ? '#34d399' : (summary.pct >= threshold - 10 ? '#fbbf24' : '#f87171'),
       },
       {
         label: 'STUDENTS SUMMARY',
-        val: `${summary.above} Above 75%  •  ${summary.below} Below`,
+        val: `${summary.above} Above ${threshold}%  •  ${summary.below} Below`,
         color: textMain,
         isSmall: true,
       },
@@ -362,7 +359,7 @@ const ImageExport = (() => {
       ctx.fillStyle = s.absent > 0 ? '#f87171' : textDim;
       ctx.fillText(String(s.absent), 585, curY + 26);
 
-      const pColors = getStatusColors(s.pct, isDark);
+      const pColors = getStatusColors(s.pct, isDark, threshold);
       drawBadge(ctx, s.pct !== null ? `${s.pct.toFixed(1)}%` : '—', 660, curY + 24, pColors.bg, pColors.fg, 11);
 
       curY += rowH;
@@ -546,6 +543,7 @@ const ImageExport = (() => {
           }
         }
       } catch (nativeErr) {
+        if (nativeErr && (nativeErr.message || '').toLowerCase().includes('cancel')) return 'cancelled';
         console.warn('Capacitor native share failed, falling back:', nativeErr);
       }
     }
@@ -565,13 +563,22 @@ const ImageExport = (() => {
         }
       }
     } catch (webShareErr) {
-      if (webShareErr.name !== 'AbortError') console.warn('WebShare error:', webShareErr);
+      // The user closing the native share sheet is not a failure — don't
+      // fall through to auto-downloading behind their back.
+      if (webShareErr.name === 'AbortError') return 'cancelled';
+      console.warn('WebShare error:', webShareErr);
     }
 
-    // 3. Fallback: Download file directly and notify user
-    await downloadCanvas(canvas, filename);
-    alert('Image downloaded to your device! You can now share it via WhatsApp or Gallery.');
-    return true;
+    // 3. Neither native nor Web Share is available on this device/browser.
+    // Fall back to a plain download, but let app.js report this honestly
+    // rather than assuming it counts as "shared".
+    const downloaded = await downloadCanvas(canvas, filename);
+    if (downloaded) {
+      window.dispatchEvent(new CustomEvent('app:toast', {
+        detail: { message: 'Sharing isn\'t available here — downloaded the image instead.', type: 'success' },
+      }));
+    }
+    return downloaded;
   }
 
   return {

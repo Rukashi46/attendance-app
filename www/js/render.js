@@ -28,20 +28,38 @@ const Render = (() => {
     return DAY_NAMES[d.getDay()];
   }
   function pctStr(p) { return p === null || p === undefined ? '—' : p.toFixed(1) + '%'; }
-  function pctClass(p) {
+  // Color tiers are relative to the configured attendance target, not a
+  // hardcoded 75/65 — e.g. if target is 80%, "warn" starts at 70%, not 65%.
+  function pctClass(p, target = 75) {
     if (p === null || p === undefined) return '';
-    if (p >= 80) return '';
-    if (p >= 65) return 'warn';
+    if (p >= target) return '';
+    if (p >= target - 10) return 'warn';
     return 'bad';
   }
-  function barRow(label, p) {
-    const cls = pctClass(p);
+  function pctColor(p, target = 75) {
+    const cls = pctClass(p, target);
+    return cls === 'bad' ? 'var(--absent)' : cls === 'warn' ? 'var(--warn)' : 'var(--present)';
+  }
+  function barRow(label, p, target = 75) {
+    const cls = pctClass(p, target);
     return `<div class="row between small" style="margin-bottom:6px">
       <span>${esc(label)}</span><span class="muted">${pctStr(p)}</span>
     </div>
     <div class="bar-track" style="margin-bottom:12px">
       <div class="bar-fill ${cls}" style="width:${p===null?0:Math.min(100,p)}%"></div>
     </div>`;
+  }
+  // ONE unambiguous can-miss indicator per subject. Quota-aware when a
+  // semester quota is configured; otherwise says so plainly and fabricates
+  // nothing. Never shown alongside the quota-free `margin()` figure.
+  function subjectMarginChip(v) {
+    if (!v || !v.allocated) {
+      return `<span class="chip-margin neutral">Semester quota not set</span>`;
+    }
+    const sm = v.semesterMargin;
+    if (!sm) return `<span class="chip-margin neutral">Semester quota not set</span>`;
+    const cls = sm.possible === false ? 'need' : 'safe';
+    return `<span class="chip-margin ${cls}">${esc(sm.text)}</span>`;
   }
 
   function topbar(title, opts = {}) {
@@ -148,7 +166,7 @@ const Render = (() => {
             <div class="sub">Roll ${esc(s.rollNo||'—')}${s.regNo ? ' · ' + esc(s.regNo) : ''}</div>
           </div>
           <div style="text-align:right">
-            <div class="name" style="color:${s.pct===null?'var(--text-dim)':s.pct<65?'var(--absent)':s.pct<75?'var(--warn)':'var(--present)'}">${pctStr(s.pct)}</div>
+            <div class="name" style="color:${s.pct===null?'var(--text-dim)':pctColor(s.pct, d.threshold)}">${pctStr(s.pct)}</div>
           </div>
         </a>`).join('')}
       </div>
@@ -188,9 +206,6 @@ const Render = (() => {
         </div>
         <div class="row between" style="margin-top:10px">
           <span class="small muted">Roll ${esc(s.rollNo||'—')} ${s.regNo ? '· Reg. ' + esc(s.regNo) : ''}</span>
-          <button class="btn sm" data-action="set-allocated-periods" title="Set total semester planned classes for full can-miss calculation">
-            ⚙️ Quota: ${d.defaultAllocated ? `${d.defaultAllocated} Classes` : 'Set Total'}
-          </button>
         </div>
         <button class="btn primary block" style="margin-top:12px" data-action="export-student-card" data-id="${s.id}">Export Report Card as Image</button>
       </div>
@@ -200,7 +215,7 @@ const Render = (() => {
         ${subEntries.length === 0 ? `<div class="card"><div class="empty small">No attendance recorded yet.</div></div>` :
           subEntries.map(([code, v]) => {
             const subName = d.subjectNames[code] || code;
-            const cls = pctClass(v.pct);
+            const cls = pctClass(v.pct, d.threshold);
             return `
             <div class="sub-card">
               <div class="sub-card-header">
@@ -209,27 +224,23 @@ const Render = (() => {
                   <div class="sub">${esc(code)}</div>
                 </div>
                 <div style="text-align:right">
-                  <div class="name" style="color:${v.pct===null?'var(--text-dim)':v.pct<65?'var(--absent)':v.pct<75?'var(--warn)':'var(--present)'}">${pctStr(v.pct)}</div>
-                  ${marginBadge(v.margin)}
+                  <div class="name" style="color:${v.pct===null?'var(--text-dim)':pctColor(v.pct, d.threshold)}">${pctStr(v.pct)}</div>
+                  ${subjectMarginChip(v)}
                 </div>
               </div>
               <div class="bar-track" style="margin-bottom:8px">
                 <div class="bar-fill ${cls}" style="width:${v.pct===null?0:Math.min(100,v.pct)}%"></div>
               </div>
               <div class="sub-metrics">
-                <span>Total: <b>${v.total}</b></span>
+                <span>Conducted: <b>${v.conducted ?? v.total}</b></span>
                 <span style="color:var(--present)">Present: <b>${v.present}</b></span>
                 <span style="color:var(--absent)">Absent: <b>${v.absent}</b></span>
               </div>
               ${v.allocated ? `
               <div style="margin-top:8px;padding:6px 10px;border-radius:8px;background:rgba(103,232,249,0.08);border:1px solid rgba(103,232,249,0.15)">
-                <div class="row between" style="font-size:11.5px">
-                  <span style="color:var(--accent2)">🎯 Semester Quota: <b>${v.allocated}</b> (${Math.max(0, v.allocated - v.conducted)} remaining)</span>
-                  <span style="font-weight:700;color:${v.semesterMargin?.possible ? 'var(--present)' : 'var(--absent)'}">
-                    ${v.semesterMargin?.text || ''}
-                  </span>
-                </div>
-              </div>` : ''}
+                <span style="color:var(--accent2);font-size:11.5px">Semester Planned Periods: <b>${v.allocated}</b> &middot; Remaining: <b>${Math.max(0, v.allocated - v.conducted)}</b></span>
+              </div>` : `
+              <div style="margin-top:8px;font-size:11.5px" class="muted">Semester quota not set for this subject.</div>`}
             </div>`;
           }).join('')}
       </div>
@@ -351,7 +362,7 @@ const Render = (() => {
             <div class="name">${esc(s.code)}</div>
             <div class="sub">${esc(s.name)}</div>
           </div>
-          <div class="name" style="color:${s.pct===null?'var(--text-dim)':s.pct<65?'var(--absent)':s.pct<75?'var(--warn)':'var(--present)'}">${pctStr(s.pct)}</div>
+          <div class="name" style="color:${s.pct===null?'var(--text-dim)':pctColor(s.pct, d.threshold)}">${pctStr(s.pct)}</div>
         </a>`).join('')}
       </div>
     </div>`;
@@ -372,13 +383,13 @@ const Render = (() => {
         <div class="small muted">Class average attendance</div>
         <div class="grid-3" style="margin-top:14px">
           <div><div class="stat-num" style="font-size:20px;color:var(--accent)">${d.conducted || 0}</div><div class="stat-label">Conducted Periods</div></div>
-          <div><div class="stat-num" style="font-size:20px;color:var(--present)">${d.above}</div><div class="stat-label">Above 75%</div></div>
-          <div><div class="stat-num" style="font-size:20px;color:var(--absent)">${d.below}</div><div class="stat-label">Below 75%</div></div>
+          <div><div class="stat-num" style="font-size:20px;color:var(--present)">${d.above}</div><div class="stat-label">Above ${d.threshold||75}%</div></div>
+          <div><div class="stat-num" style="font-size:20px;color:var(--absent)">${d.below}</div><div class="stat-label">Below ${d.threshold||75}%</div></div>
         </div>
         <div class="row between" style="margin-top:10px">
-          <span class="small muted">Quota: <b>${d.allocatedPeriods ? d.allocatedPeriods + ' Total Planned' : 'Not set'}</b></span>
-          <button class="btn sm" data-action="set-allocated-periods" data-code="${esc(d.code)}" title="Set total semester planned classes">
-            ⚙️ Quota: ${d.allocatedPeriods ? `${d.allocatedPeriods} Classes` : 'Set Total'}
+          <span class="small muted">Semester Planned Periods: <b>${d.allocatedPeriods ? d.allocatedPeriods : 'Not set'}</b>${d.allocatedPeriods ? ` &middot; Remaining: <b>${Math.max(0, d.allocatedPeriods - (d.conducted||0))}</b>` : ''}</span>
+          <button class="btn sm" data-action="set-allocated-periods" data-code="${esc(d.code)}" title="Set total semester planned periods for this subject">
+            ${d.allocatedPeriods ? `Edit (${d.allocatedPeriods})` : 'Set Semester Planned Periods'}
           </button>
         </div>
         <button class="btn primary block" style="margin-top:12px" data-action="export-subject-card" data-code="${esc(d.code)}">Export Subject Stats as Image</button>
@@ -387,8 +398,8 @@ const Render = (() => {
       <div class="section-title">Filter Students</div>
       <div class="tabbar" style="margin-bottom:10px">
         <span class="chip ${filter==='all'?'active':''}" data-action="filter-subject-students" data-filter="all" data-code="${esc(d.code)}">All (${d.students.length})</span>
-        <span class="chip ${filter==='below'?'active':''}" data-action="filter-subject-students" data-filter="below" data-code="${esc(d.code)}">Below 75% (${d.below})</span>
-        <span class="chip ${filter==='above'?'active':''}" data-action="filter-subject-students" data-filter="above" data-code="${esc(d.code)}">Above 75% (${d.above})</span>
+        <span class="chip ${filter==='below'?'active':''}" data-action="filter-subject-students" data-filter="below" data-code="${esc(d.code)}">Below ${d.threshold||75}% (${d.below})</span>
+        <span class="chip ${filter==='above'?'active':''}" data-action="filter-subject-students" data-filter="above" data-code="${esc(d.code)}">Above ${d.threshold||75}% (${d.above})</span>
       </div>
 
       <div class="section-title">Student Breakdown (${displayedStudents.length})</div>
@@ -399,11 +410,11 @@ const Render = (() => {
             <div class="avatar">${initials(s.name)}</div>
             <div style="flex:1">
               <div class="name">${esc(s.name)}</div>
-              <div class="sub">Total: ${s.total} &middot; <span style="color:var(--present)">${s.present}P</span> / <span style="color:var(--absent)">${s.absent}A</span></div>
+              <div class="sub">Conducted: ${s.total} &middot; <span style="color:var(--present)">${s.present}P</span> / <span style="color:var(--absent)">${s.absent}A</span></div>
             </div>
             <div style="text-align:right">
-              <div class="name" style="color:${s.pct===null?'var(--text-dim)':s.pct<65?'var(--absent)':s.pct<75?'var(--warn)':'var(--present)'}">${pctStr(s.pct)}</div>
-              ${marginBadge(s.margin)}
+              <div class="name" style="color:${s.pct===null?'var(--text-dim)':pctColor(s.pct, d.threshold)}">${pctStr(s.pct)}</div>
+              ${subjectMarginChip({ allocated: d.allocatedPeriods, semesterMargin: s.semesterMargin })}
             </div>
           </a>`).join('')}
       </div>
@@ -432,7 +443,7 @@ const Render = (() => {
             <div class="sub">Total: ${r.total} &middot; ${r.present}P / <span style="color:var(--absent)">${r.absent}A</span></div>
           </div>
           <div style="text-align:right">
-            <div class="name" style="color:${r.pct<65?'var(--absent)':'var(--warn)'}">${pctStr(r.pct)}</div>
+            <div class="name" style="color:${pctColor(r.pct, d.threshold)}">${pctStr(r.pct)}</div>
             ${marginBadge(r.margin)}
           </div>
         </a>`).join('')}
@@ -516,7 +527,7 @@ const Render = (() => {
                 <th>Avg %</th>
                 <th>Present</th>
                 <th>Absent</th>
-                <th>&lt;75%</th>
+                <th>&lt;${d.threshold||75}%</th>
               </tr>
             </thead>
             <tbody>
@@ -529,7 +540,7 @@ const Render = (() => {
                   </a>
                 </td>
                 <td><b>${s.conducted || 0}</b></td>
-                <td><span style="color:${pctClass(s.pct)==='bad'?'var(--absent)':pctClass(s.pct)==='warn'?'var(--warn)':'var(--present)'}"><b>${pctStr(s.pct)}</b></span></td>
+                <td><span style="color:${pctColor(s.pct, d.threshold)}"><b>${pctStr(s.pct)}</b></span></td>
                 <td style="color:var(--present)">${s.present || 0}</td>
                 <td style="color:${s.absent > 0 ? 'var(--absent)' : 'inherit'}">${s.absent || 0}</td>
                 <td><span class="badge ${s.below > 0 ? 'absent' : 'muted'}">${s.below || 0}</span></td>
@@ -559,7 +570,7 @@ const Render = (() => {
   // ---------------- Image Preview Modal ----------------
   function imagePreviewModal(d) {
     return `
-    <div class="modal-backdrop" id="image-modal-backdrop" data-action="close-modal-backdrop">
+    <div class="modal-backdrop" id="app-modal-backdrop">
       <div class="modal-card">
         <div class="modal-header">
           <h3>${esc(d.title || 'Export Preview')}</h3>
@@ -573,6 +584,58 @@ const Render = (() => {
           <button class="btn block" data-action="modal-share" data-title="${esc(d.title)}" data-filename="${esc(d.filename)}">Share</button>
         </div>
       </div>
+    </div>`;
+  }
+
+  // ---------------- Confirm / Prompt modals (replace native confirm()/prompt()) ----------------
+  function confirmModal(d) {
+    return `
+    <div class="modal-backdrop" id="app-modal-backdrop">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>${esc(d.title)}</h3>
+          <button class="icon-btn" data-action="confirm-modal-no" style="border:none;background:transparent;font-size:18px">✕</button>
+        </div>
+        <div class="modal-body form-body">
+          <p class="small" style="margin:0">${esc(d.message)}</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn block" data-action="confirm-modal-no">Cancel</button>
+          <button class="btn ${d.danger ? 'danger' : 'primary'} block" data-action="confirm-modal-yes">${esc(d.confirmLabel || 'Confirm')}</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function promptModal(d) {
+    return `
+    <div class="modal-backdrop" id="app-modal-backdrop">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>${esc(d.title)}</h3>
+          <button class="icon-btn" data-action="prompt-modal-cancel" style="border:none;background:transparent;font-size:18px">✕</button>
+        </div>
+        <div class="modal-body form-body">
+          ${d.label ? `<label style="margin-top:0">${esc(d.label)}</label>` : ''}
+          <input id="prompt-modal-input" type="number" inputmode="numeric" min="1" value="${esc(d.value)}" placeholder="${esc(d.placeholder || '')}" />
+        </div>
+        <div class="modal-footer">
+          <button class="btn block" data-action="prompt-modal-cancel">Cancel</button>
+          <button class="btn primary block" data-action="prompt-modal-ok">Save</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function importSuccess(r) {
+    return `
+    <div class="card">
+      <div class="row" style="gap:8px;margin-bottom:8px">
+        <span class="badge present">✓ Import complete</span>
+      </div>
+      <div class="row between small" style="margin-bottom:4px"><span>Records written</span><b style="color:var(--present)">${r.written}</b></div>
+      ${r.conflictsRemaining ? `<div class="row between small" style="margin-bottom:4px"><span>Unresolved conflicts (manual edits kept)</span><b style="color:var(--warn)">${r.conflictsRemaining}</b></div>` : ''}
+      <button class="btn primary block" style="margin-top:12px" data-action="import-done">Done</button>
     </div>`;
   }
 
@@ -691,13 +754,13 @@ const Render = (() => {
   }
 
   return {
-    esc, initials, fmtDate, fmtDateShort, dayNameOf, pctStr, pctClass, barRow, DAY_NAMES,
+    esc, initials, fmtDate, fmtDateShort, dayNameOf, pctStr, pctClass, pctColor, barRow, subjectMarginChip, DAY_NAMES,
     topbar, bottomNav,
     dashboard, studentsList, studentDetail, studentForm,
     markHome, markPeriod,
     subjectsList, subjectDetail,
     lowAttendance, calendarHome, calendarDay,
-    reports, more, importHome, importPreview, backup, settings,
-    imagePreviewModal, marginBadge,
+    reports, more, importHome, importPreview, importSuccess, backup, settings,
+    imagePreviewModal, confirmModal, promptModal, marginBadge,
   };
 })();

@@ -20,6 +20,7 @@
   let importState = null;
   let backupPending = false;
   let activeModalCanvas = null;
+  let pendingModalResolve = null;
 
   function showImageModal(canvas, title, filename) {
     activeModalCanvas = canvas;
@@ -36,7 +37,61 @@
     const el = document.getElementById('active-modal-container');
     if (el) el.remove();
     activeModalCanvas = null;
+    if (pendingModalResolve) { const r = pendingModalResolve; pendingModalResolve = null; r(null); }
   }
+
+  // ---- In-app replacements for confirm() / prompt() / alert() ---------
+  // The app must never rely on native browser dialogs for normal workflows.
+  function openConfirmModal({ title = 'Please confirm', message = '', confirmLabel = 'Confirm', danger = false } = {}) {
+    closeModal();
+    return new Promise((resolve) => {
+      pendingModalResolve = resolve;
+      const div = document.createElement('div');
+      div.id = 'active-modal-container';
+      div.innerHTML = Render.confirmModal({ title, message, confirmLabel, danger });
+      document.body.appendChild(div);
+      window.__resolveActiveModal = (val) => {
+        pendingModalResolve = null;
+        closeModal();
+        resolve(val);
+      };
+    });
+  }
+
+  function openPromptModal({ title = 'Enter a value', label = '', value = '', placeholder = '', numeric = true } = {}) {
+    closeModal();
+    return new Promise((resolve) => {
+      pendingModalResolve = resolve;
+      const div = document.createElement('div');
+      div.id = 'active-modal-container';
+      div.innerHTML = Render.promptModal({ title, label, value, placeholder });
+      document.body.appendChild(div);
+      const input = document.getElementById('prompt-modal-input');
+      if (input) { input.focus(); input.select(); }
+      window.__resolveActiveModal = (val) => {
+        pendingModalResolve = null;
+        closeModal();
+        resolve(val);
+      };
+    });
+  }
+
+  function showToast(message, type = 'success', duration = 3200) {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = message;
+    container.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    setTimeout(() => {
+      el.classList.remove('show');
+      setTimeout(() => el.remove(), 250);
+    }, duration);
+  }
+  window.addEventListener('app:toast', (e) => {
+    showToast(e.detail?.message || '', e.detail?.type || 'success');
+  });
 
   function todayIso() {
     const d = new Date();
@@ -182,11 +237,11 @@
   }
 
   async function viewStudents() {
-    view().innerHTML = Render.studentsList({ students: filteredSortedStudents(), query: studentsState.query, sort: studentsState.sort });
+    view().innerHTML = Render.studentsList({ students: filteredSortedStudents(), query: studentsState.query, sort: studentsState.sort, threshold: cache.threshold });
   }
 
   function rerenderStudentsListOnly() {
-    view().innerHTML = Render.studentsList({ students: filteredSortedStudents(), query: studentsState.query, sort: studentsState.sort });
+    view().innerHTML = Render.studentsList({ students: filteredSortedStudents(), query: studentsState.query, sort: studentsState.sort, threshold: cache.threshold });
     const input = document.getElementById('student-search');
     if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
   }
@@ -209,7 +264,6 @@
       subjectNames,
       recentDays,
       threshold: cache.threshold,
-      defaultAllocated: cache.allocatedPeriods._default || null,
     });
   }
 
@@ -261,7 +315,7 @@
     const stats = Calc.buildStats(cache.attendance);
     const subjects = cache.subjects.map((s) => ({ ...s, pct: Calc.subjectSummary(stats, s.code, cache.threshold, cache.allocatedPeriods).pct }));
     subjects.sort((a, b) => a.code.localeCompare(b.code));
-    view().innerHTML = Render.subjectsList({ subjects });
+    view().innerHTML = Render.subjectsList({ subjects, threshold: cache.threshold });
   }
 
   async function viewSubjectDetail(code, filter = 'all') {
@@ -281,7 +335,7 @@
       below,
       filter,
       threshold: cache.threshold,
-      allocatedPeriods: cache.allocatedPeriods[code] || cache.allocatedPeriods._default || null,
+      allocatedPeriods: cache.allocatedPeriods[code] || null,
     });
   }
 
@@ -350,11 +404,30 @@
   }
 
   async function handleClick(e) {
+    // Backdrop click-outside-to-close: only when the backdrop element itself
+    // (not a descendant like the card, image, or a button inside it) is the
+    // actual click target.
+    if (e.target && e.target.id === 'app-modal-backdrop') {
+      if (window.__resolveActiveModal) window.__resolveActiveModal(null);
+      else closeModal();
+      return;
+    }
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     const action = btn.dataset.action;
 
     if (action === 'back') { history.back(); return; }
+
+    // Generic confirm/prompt modal wiring (used by openConfirmModal/openPromptModal)
+    if (action === 'confirm-modal-yes') { if (window.__resolveActiveModal) window.__resolveActiveModal(true); return; }
+    if (action === 'confirm-modal-no') { if (window.__resolveActiveModal) window.__resolveActiveModal(false); return; }
+    if (action === 'prompt-modal-ok') {
+      const input = document.getElementById('prompt-modal-input');
+      const val = input ? input.value : null;
+      if (window.__resolveActiveModal) window.__resolveActiveModal(val);
+      return;
+    }
+    if (action === 'prompt-modal-cancel') { if (window.__resolveActiveModal) window.__resolveActiveModal(null); return; }
 
     if (action === 'open-sort') {
       const modes = ['name', 'roll', 'low', 'high'];
@@ -370,29 +443,28 @@
     }
 
     if (action === 'set-allocated-periods') {
+      // Quota is a SUBJECT property only. This action always requires a subject
+      // code — there is no class-wide/default/student-level quota to set.
       const code = btn.dataset.code;
-      const cur = code ? (cache.allocatedPeriods[code] || cache.allocatedPeriods._default || 45) : (cache.allocatedPeriods._default || 45);
-      const promptTitle = code
-        ? `Enter total semester planned periods for ${code} (e.g. 45):`
-        : 'Enter total semester planned periods per subject (default quota, e.g. 45):';
-      const input = prompt(promptTitle, cur);
+      if (!code) return;
+      const cur = cache.allocatedPeriods[code] || '';
+      const input = await openPromptModal({
+        title: 'Semester Planned Periods',
+        label: `Total periods planned for ${code} this semester`,
+        value: cur,
+        placeholder: 'e.g. 60',
+      });
       if (input === null) return;
-      const num = parseInt(input.trim(), 10);
+      const num = parseInt(String(input).trim(), 10);
       if (isNaN(num) || num <= 0) {
-        alert('Please enter a valid positive number.');
+        showToast('Please enter a valid positive number.', 'error');
         return;
       }
-      if (code) cache.allocatedPeriods[code] = num;
-      else cache.allocatedPeriods._default = num;
+      cache.allocatedPeriods[code] = num;
       await DB.setMeta('allocatedPeriods', cache.allocatedPeriods);
       if (window.SyncEngine) SyncEngine.autoSync();
-      if (code) {
-        await viewSubjectDetail(code);
-      } else {
-        const m = location.hash.match(/^#\/students\/([^/]+)$/);
-        if (m) await viewStudentDetail(m[1]);
-        else dispatch();
-      }
+      await viewSubjectDetail(code);
+      showToast(`Semester planned periods for ${code} set to ${num}.`, 'success');
       return;
     }
 
@@ -405,10 +477,11 @@
       if (window.SyncEngine) {
         await SyncEngine.saveConfig(cache.syncConfig);
         const res = await SyncEngine.syncNow();
-        alert(res.message);
+        await loadCache(); // pick up the lastSync timestamp SyncEngine just persisted
+        showToast(res.message, res.success ? 'success' : 'error');
       } else {
         await DB.setMeta('syncConfig', cache.syncConfig);
-        alert('Sync settings saved.');
+        showToast('Sync settings saved.', 'success');
       }
       viewSettings();
       return;
@@ -416,14 +489,14 @@
 
     if (action === 'sync-now') {
       if (!window.SyncEngine) {
-        alert('Sync engine is initializing. Please try again in a moment.');
+        showToast('Sync engine is initializing. Please try again in a moment.', 'error');
         return;
       }
       const stEl = document.getElementById('sync-status-text');
       if (stEl) stEl.innerText = 'Status: Syncing...';
       const res = await SyncEngine.syncNow();
       await loadCache();
-      alert(res.message);
+      showToast(res.message, res.success ? 'success' : 'error');
       const h = location.hash;
       if (h === '#/settings') viewSettings();
       else if (h === '#/dashboard' || h === '' || h === '#') viewDashboard();
@@ -437,7 +510,7 @@
     if (action === 'go-mark-manual') {
       const code = document.getElementById('manual-subject').value;
       const period = document.getElementById('manual-period').value;
-      if (!code) { alert('Choose a subject first.'); return; }
+      if (!code) { showToast('Choose a subject first.', 'error'); return; }
       location.hash = `#/mark/period/${markHomeState.date}/${period}/${encodeURIComponent(code)}`;
       return;
     }
@@ -450,7 +523,12 @@
     if (action === 'set-status') {
       const studentId = btn.dataset.student, status = btn.dataset.status;
       if (markPeriodState.locked) {
-        if (!confirm('This period is locked. Edit attendance anyway?')) return;
+        const ok = await openConfirmModal({
+          title: 'Period is locked',
+          message: 'This period is locked. Edit attendance anyway?',
+          confirmLabel: 'Edit anyway',
+        });
+        if (!ok) return;
       }
       const row = markPeriodState.rows.find((r) => r.studentId === studentId);
       if (row) row.status = row.status === status ? row.status : status;
@@ -458,7 +536,14 @@
       return;
     }
     if (action === 'mark-all') {
-      if (markPeriodState.locked && !confirm('This period is locked. Edit attendance anyway?')) return;
+      if (markPeriodState.locked) {
+        const ok = await openConfirmModal({
+          title: 'Period is locked',
+          message: 'This period is locked. Edit attendance anyway?',
+          confirmLabel: 'Edit anyway',
+        });
+        if (!ok) return;
+      }
       markPeriodState.rows.forEach((r) => { r.status = btn.dataset.status; });
       rerenderMarkPeriod();
       return;
@@ -476,7 +561,7 @@
         }
       }
       await loadCache();
-      alert('Attendance saved.');
+      showToast('Attendance saved.', 'success');
       location.hash = '#/mark';
       return;
     }
@@ -485,7 +570,7 @@
     if (action === 'edit-student') { location.hash = `#/students/${btn.dataset.id}/edit`; return; }
     if (action === 'save-student') {
       const name = document.getElementById('f-name').value.trim();
-      if (!name) { alert('Name is required.'); return; }
+      if (!name) { showToast('Name is required.', 'error'); return; }
       const regNo = document.getElementById('f-regno').value.trim();
       const rollNo = document.getElementById('f-rollno').value.trim();
       const id = btn.dataset.id;
@@ -501,9 +586,16 @@
       return;
     }
     if (action === 'delete-student') {
-      if (!confirm('Remove this student? Their recorded attendance history will be kept but no longer shown against a name.')) return;
+      const ok = await openConfirmModal({
+        title: 'Remove student',
+        message: 'Remove this student? Their recorded attendance history will be kept but no longer shown against a name.',
+        confirmLabel: 'Remove',
+        danger: true,
+      });
+      if (!ok) return;
       await DB.del('students', btn.dataset.id);
       await loadCache();
+      showToast('Student removed.', 'success');
       location.hash = '#/students';
       return;
     }
@@ -534,7 +626,7 @@
         academicYear: document.getElementById('s-year').value.trim(),
       };
       await DB.setMeta('classInfo', info);
-      alert('Class setup saved.');
+      showToast('Class setup saved.', 'success');
       return;
     }
 
@@ -544,10 +636,12 @@
       const result = await Importer.commitImport(importState.analysis, importState.planResult, {});
       await loadCache();
       if (window.SyncEngine) SyncEngine.autoSync();
-      alert(`Import complete. ${result.written} records written.${result.conflictsRemaining ? ' ' + result.conflictsRemaining + ' conflicts need manual review.' : ''}`);
-      location.hash = '#/dashboard';
+      const resultBox = document.getElementById('import-result');
+      if (resultBox) resultBox.innerHTML = Render.importSuccess(result);
+      showToast(`Import complete — ${result.written} record(s) written.`, 'success');
       return;
     }
+    if (action === 'import-done') { location.hash = '#/dashboard'; return; }
 
     if (action === 'export') { await exportAttendance(btn.dataset.format); return; }
     if (action === 'backup-export') { await exportBackup(); return; }
@@ -556,11 +650,16 @@
     // Image Export & Modal actions
     if (action === 'close-modal') { closeModal(); return; }
     if (action === 'modal-download') {
-      if (activeModalCanvas) ImageExport.downloadCanvas(activeModalCanvas, btn.dataset.filename);
+      if (!activeModalCanvas) { showToast('Nothing to download — please regenerate the image.', 'error'); return; }
+      const ok = await ImageExport.downloadCanvas(activeModalCanvas, btn.dataset.filename);
+      showToast(ok ? `Downloaded ${btn.dataset.filename}` : 'Could not download the image. Please try again.', ok ? 'success' : 'error');
       return;
     }
     if (action === 'modal-share') {
-      if (activeModalCanvas) ImageExport.shareCanvas(activeModalCanvas, btn.dataset.title, btn.dataset.filename);
+      if (!activeModalCanvas) { showToast('Nothing to share — please regenerate the image.', 'error'); return; }
+      const result = await ImageExport.shareCanvas(activeModalCanvas, btn.dataset.title, btn.dataset.filename);
+      if (result === 'cancelled') return; // user dismissed the native share sheet — no message needed
+      showToast(result ? 'Shared successfully.' : 'Sharing is not available on this device/browser.', result ? 'success' : 'error');
       return;
     }
 
@@ -572,7 +671,7 @@
       const stOverall = Calc.studentOverall(stats, student.id, cache.threshold, cache.allocatedPeriods);
       const subjectNames = Object.fromEntries(cache.subjects.map((s) => [s.code, s.name]));
       const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-      const canvas = ImageExport.generateStudentCard(student, stOverall, subjectNames, cache.classInfo, isDark);
+      const canvas = ImageExport.generateStudentCard(student, stOverall, subjectNames, cache.classInfo, isDark, cache.threshold);
       showImageModal(canvas, `${student.name} — Report Card`, `Attendance_${student.name.replace(/\s+/g, '_')}.png`);
       return;
     }
@@ -584,7 +683,7 @@
       const summary = Calc.subjectSummary(stats, code, cache.threshold, cache.allocatedPeriods);
       const students = summary.students.map((r) => ({ ...r, name: (studentById(r.studentId) || {}).name || '—' }));
       const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-      const canvas = ImageExport.generateSubjectCard(subject, { ...summary, students }, cache.classInfo, isDark);
+      const canvas = ImageExport.generateSubjectCard(subject, { ...summary, students }, cache.classInfo, isDark, cache.threshold);
       showImageModal(canvas, `${subject.code} — Subject Stats`, `Subject_${subject.code}_Attendance.png`);
       return;
     }
@@ -596,7 +695,7 @@
         return { ...r, name: st.name || '—', rollNo: st.rollNo || '' };
       });
       const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-      const canvas = ImageExport.generateDefaultersNotice(rows, cache.threshold, cache.classInfo, isDark);
+      const canvas = ImageExport.generateDefaultersNotice(rows, cache.threshold, cache.classInfo, isDark, cache.threshold);
       showImageModal(canvas, `Attendance Shortage Notice (<${cache.threshold}%)`, `Defaulters_Notice_${cache.threshold}pct.png`);
       return;
     }
@@ -617,7 +716,7 @@
         below: allStudents.filter(s => s.pct !== null && s.pct < cache.threshold).length,
         students: allStudents,
       };
-      const canvas = ImageExport.generateSubjectCard(subject, summary, cache.classInfo, isDark);
+      const canvas = ImageExport.generateSubjectCard(subject, summary, cache.classInfo, isDark, cache.threshold);
       showImageModal(canvas, 'Class Attendance Performance', 'Class_Attendance_Overview.png');
       return;
     }
@@ -625,14 +724,14 @@
     if (action === 'export-quick-student-card') {
       const sel = document.getElementById('quick-student-export');
       const sId = sel ? sel.value : null;
-      if (!sId) { alert('Please select a student from the dropdown first.'); return; }
+      if (!sId) { showToast('Please select a student from the dropdown first.', 'error'); return; }
       const student = studentById(sId);
       if (!student) return;
       const stats = Calc.buildStats(cache.attendance);
       const stOverall = Calc.studentOverall(stats, student.id, cache.threshold, cache.allocatedPeriods);
       const subjectNames = Object.fromEntries(cache.subjects.map((s) => [s.code, s.name]));
       const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-      const canvas = ImageExport.generateStudentCard(student, stOverall, subjectNames, cache.classInfo, isDark);
+      const canvas = ImageExport.generateStudentCard(student, stOverall, subjectNames, cache.classInfo, isDark, cache.threshold);
       showImageModal(canvas, `${student.name} — Report Card`, `Attendance_${student.name.replace(/\s+/g, '_')}.png`);
       return;
     }
@@ -671,7 +770,13 @@
     if (e.target.id === 'backup-file') {
       const file = e.target.files[0];
       if (!file) return;
-      if (!confirm('Restoring a backup replaces all current data on this device. Continue?')) return;
+      const ok = await openConfirmModal({
+        title: 'Restore backup',
+        message: 'Restoring a backup replaces all current data on this device. Continue?',
+        confirmLabel: 'Restore',
+        danger: true,
+      });
+      if (!ok) { e.target.value = ''; return; }
       try {
         const text = await file.text();
         const data = JSON.parse(text);
@@ -681,10 +786,10 @@
         }
         if (data.meta) for (const [k, v] of Object.entries(data.meta)) await DB.setMeta(k, v);
         await loadCache();
-        alert('Backup restored.');
+        showToast('Backup restored.', 'success');
         location.hash = '#/dashboard';
       } catch (err) {
-        alert('Could not restore this backup file: ' + err.message);
+        showToast('Could not restore this backup file: ' + err.message, 'error');
       }
       return;
     }

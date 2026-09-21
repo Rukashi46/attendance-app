@@ -183,7 +183,7 @@ const SyncEngine = (() => {
         }
       }
 
-      syncConfig.lastSync = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      syncConfig.lastSync = new Date().toISOString();
       await DB.setMeta('syncConfig', syncConfig);
       status = 'synced';
       notify();
