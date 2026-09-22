@@ -117,15 +117,16 @@
     cache.classInfo = await DB.getMeta('classInfo', {});
     cache.lastImport = await DB.getMeta('lastImport', null);
     cache.allocatedPeriods = await DB.getMeta('allocatedPeriods', {});
-    // Normalize syncConfig field names (older saves used key/url/auto aliases)
+    // Normalize syncConfig field names
     const sc = await DB.getMeta('syncConfig', null) || {};
     cache.syncConfig = {
-      enabled:     !!sc.enabled,
-      syncKey:     sc.syncKey     || sc.key  || '',
-      endpointUrl: sc.endpointUrl || sc.url  || '',
-      autoSync:    sc.autoSync    !== undefined ? sc.autoSync
-                 : sc.auto       !== undefined ? sc.auto : true,
-      lastSync:    sc.lastSync    || null,
+      enabled:         !!sc.enabled,
+      syncKey:         sc.syncKey         || sc.key || '',
+      supabaseUrl:     sc.supabaseUrl     || '',
+      supabaseAnonKey: sc.supabaseAnonKey || '',
+      autoSync:        sc.autoSync        !== undefined ? sc.autoSync
+                     : sc.auto           !== undefined ? sc.auto : true,
+      lastSync:        sc.lastSync        || null,
     };
     applyTheme();
     if (window.SyncEngine && !window.SyncEngine._hasInit) {
@@ -500,11 +501,15 @@
     }
 
     if (action === 'save-sync-config') {
-      const syncKey    = (document.getElementById('sync-key')?.value  || '').trim();
-      const endpointUrl = (document.getElementById('sync-url')?.value || '').trim();
-      const autoSync   = !!document.getElementById('sync-auto')?.checked;
-      const enabled    = !!syncKey;
-      cache.syncConfig = { enabled, syncKey, endpointUrl, autoSync, lastSync: cache.syncConfig?.lastSync || null };
+      const syncKey        = (document.getElementById('sync-key')?.value    || '').trim();
+      const supabaseUrl    = (document.getElementById('sync-sb-url')?.value || '').trim();
+      const supabaseAnonKey = (document.getElementById('sync-sb-key')?.value || '').trim();
+      const autoSync       = !!document.getElementById('sync-auto')?.checked;
+      const enabled        = !!(syncKey && supabaseUrl && supabaseAnonKey);
+      cache.syncConfig = {
+        enabled, syncKey, supabaseUrl, supabaseAnonKey,
+        autoSync, lastSync: cache.syncConfig?.lastSync || null,
+      };
       if (window.SyncEngine) {
         await SyncEngine.saveConfig(cache.syncConfig);
         const res = await SyncEngine.syncNow();

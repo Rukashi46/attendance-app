@@ -1,19 +1,37 @@
 /* ---------------------------------------------------------------------
- * Online Cloud Sync Engine
- * Enables automatic background synchronization when online:
- * - Peer & Multi-Device Sync using Class Sync Key
- * - Bidirectional record merging (no data loss)
- * - Auto-sync on connection restore or data save
- * - Configurable custom endpoint / Google Sheets / Webhook support
+ * Cloud Sync Engine — Supabase backend
+ *
+ * How it works:
+ *   1. User fills in Supabase Project URL, Anon Key, and a Room Key in
+ *      Settings.  All three are required.
+ *   2. The Room Key becomes the sync_key primary-key value in the
+ *      sync_data table.  Every device sharing the same three credentials
+ *      + room key reads and writes the same row.
+ *   3. Sync strategy: pull remote JSONB payload -> merge into local IDB
+ *      (additive, never deletes) -> push the merged dataset back.
+ *   4. Auto-sync fires whenever the device comes back online and on every
+ *      data-save if "Auto-sync when connected" is enabled.
+ *
+ * Required Supabase table (run once in SQL Editor):
+ *
+ *   CREATE TABLE sync_data (
+ *     sync_key   TEXT PRIMARY KEY,
+ *     payload    JSONB NOT NULL,
+ *     updated_at TIMESTAMPTZ DEFAULT NOW()
+ *   );
+ *   ALTER TABLE sync_data ENABLE ROW LEVEL SECURITY;
+ *   CREATE POLICY "allow all" ON sync_data
+ *     FOR ALL USING (true) WITH CHECK (true);
  * ------------------------------------------------------------------- */
 const SyncEngine = (() => {
 
   let syncConfig = {
-    enabled: false,
-    syncKey: '',
-    endpointUrl: '',
-    autoSync: true,
-    lastSync: null,
+    enabled:         false,
+    syncKey:         '',
+    supabaseUrl:     '',
+    supabaseAnonKey: '',
+    autoSync:        true,
+    lastSync:        null,
   };
 
   let status = 'unconfigured'; // 'unconfigured' | 'synced' | 'syncing' | 'offline' | 'error'
@@ -24,28 +42,29 @@ const SyncEngine = (() => {
 
   function getStatus() {
     return {
-      status: !navigator.onLine ? 'offline' : status,
+      status:   !navigator.onLine ? 'offline' : status,
       isOnline: navigator.onLine,
       lastSync: syncConfig.lastSync,
-      syncKey: syncConfig.syncKey,
-      enabled: syncConfig.enabled,
+      syncKey:  syncConfig.syncKey,
+      enabled:  syncConfig.enabled,
     };
   }
 
+  // Config persistence
   async function loadConfig() {
     const saved = await DB.getMeta('syncConfig', null);
     if (saved) {
-      // Normalize field names — older saves used key/url/auto aliases
       syncConfig = {
         ...syncConfig,
         ...saved,
-        syncKey:     saved.syncKey     || saved.key  || '',
-        endpointUrl: saved.endpointUrl || saved.url  || '',
-        autoSync:    saved.autoSync    !== undefined ? saved.autoSync
-                   : saved.auto       !== undefined ? saved.auto : true,
+        syncKey:         saved.syncKey         || saved.key || '',
+        supabaseUrl:     saved.supabaseUrl     || '',
+        supabaseAnonKey: saved.supabaseAnonKey || '',
+        autoSync: saved.autoSync !== undefined ? saved.autoSync
+                : saved.auto    !== undefined ? saved.auto : true,
       };
     }
-    status = syncConfig.enabled && syncConfig.syncKey
+    status = _isFullyConfigured()
       ? (navigator.onLine ? 'synced' : 'offline')
       : 'unconfigured';
     notify();
@@ -54,103 +73,131 @@ const SyncEngine = (() => {
   async function saveConfig(cfg) {
     syncConfig = { ...syncConfig, ...cfg };
     await DB.setMeta('syncConfig', syncConfig);
-    status = syncConfig.enabled && syncConfig.syncKey ? 'synced' : 'unconfigured';
+    status = _isFullyConfigured() ? 'synced' : 'unconfigured';
     notify();
   }
 
-  // Cloud endpoint resolver
-  // Default: jsonstore.io — free, no-auth JSON key-value store.
-  // The sync key the user enters becomes the storage path, so all devices
-  // sharing the same key read and write the same cloud document.
-  function getEndpoint() {
-    if (syncConfig.endpointUrl && syncConfig.endpointUrl.trim().startsWith('http')) {
-      return { url: syncConfig.endpointUrl.trim(), isCustom: true };
-    }
-    const safeKey = syncConfig.syncKey.trim().toLowerCase().replace(/[^a-z0-9]/g, '-');
-    return { url: `https://www.jsonstore.io/${encodeURIComponent(safeKey)}`, isCustom: false };
+  function _isFullyConfigured() {
+    return !!(
+      syncConfig.enabled &&
+      syncConfig.syncKey &&
+      syncConfig.supabaseUrl &&
+      syncConfig.supabaseAnonKey
+    );
   }
 
-  // Prepare full sync payload
+  // Supabase REST helpers
+  function _sbHeaders() {
+    return {
+      'Content-Type':  'application/json',
+      'apikey':         syncConfig.supabaseAnonKey,
+      'Authorization': 'Bearer ' + syncConfig.supabaseAnonKey,
+      'Prefer':         'return=minimal',
+    };
+  }
+
+  // GET the payload for this room key (returns null if not found)
+  async function _sbPull() {
+    const base = syncConfig.supabaseUrl.replace(/\/$/, '');
+    const url = base + '/rest/v1/sync_data?sync_key=eq.' +
+                encodeURIComponent(syncConfig.syncKey) + '&select=payload';
+    const res = await fetch(url, { method: 'GET', headers: _sbHeaders() });
+    if (!res.ok) throw new Error('Supabase pull failed: ' + res.status + ' ' + res.statusText);
+    const rows = await res.json();
+    return (rows && rows.length > 0) ? rows[0].payload : null;
+  }
+
+  // UPSERT the payload for this room key
+  async function _sbPush(data) {
+    const base = syncConfig.supabaseUrl.replace(/\/$/, '');
+    const url = base + '/rest/v1/sync_data';
+    const headers = {
+      ..._sbHeaders(),
+      'Prefer': 'resolution=merge-duplicates,return=minimal',
+    };
+    const body = JSON.stringify({
+      sync_key:   syncConfig.syncKey,
+      payload:    data,
+      updated_at: new Date().toISOString(),
+    });
+    const res = await fetch(url, { method: 'POST', headers, body });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error('Supabase push failed: ' + res.status + ' ' + errText);
+    }
+  }
+
+  // Gather full local dataset
   async function gatherLocalData() {
     return {
-      version: 1,
-      syncKey: syncConfig.syncKey,
-      timestamp: new Date().toISOString(),
-      students: await DB.getAll('students'),
-      subjects: await DB.getAll('subjects'),
-      timetable: await DB.getAll('timetable'),
+      version:    2,
+      syncKey:    syncConfig.syncKey,
+      timestamp:  new Date().toISOString(),
+      students:   await DB.getAll('students'),
+      subjects:   await DB.getAll('subjects'),
+      timetable:  await DB.getAll('timetable'),
       attendance: await DB.getAll('attendance'),
       meta: {
-        classInfo: await DB.getMeta('classInfo', {}),
-        threshold: await DB.getMeta('threshold', 75),
+        classInfo:        await DB.getMeta('classInfo', {}),
+        threshold:        await DB.getMeta('threshold', 75),
         allocatedPeriods: await DB.getMeta('allocatedPeriods', {}),
       },
     };
   }
 
-  // Merge remote data into local IndexedDB
+  // Additive merge — never removes local records
   async function mergeRemoteData(remote) {
     if (!remote) return 0;
     let newCount = 0;
 
-    // Merge students
+    // Students
     if (Array.isArray(remote.students)) {
-      const localStudents = await DB.getAll('students');
-      const localMap = new Map(localStudents.map(s => [s.id, s]));
+      const local = await DB.getAll('students');
+      const localIds = new Set(local.map(s => s.id));
       for (const s of remote.students) {
-        if (!localMap.has(s.id)) {
-          await DB.put('students', s);
-          newCount++;
-        }
+        if (!localIds.has(s.id)) { await DB.put('students', s); newCount++; }
       }
     }
 
-    // Merge subjects
+    // Subjects
     if (Array.isArray(remote.subjects)) {
-      const localSubs = await DB.getAll('subjects');
-      const localCodes = new Set(localSubs.map(s => s.code));
+      const local = await DB.getAll('subjects');
+      const localCodes = new Set(local.map(s => s.code));
       for (const su of remote.subjects) {
-        if (!localCodes.has(su.code)) {
-          await DB.put('subjects', su);
-          newCount++;
-        }
+        if (!localCodes.has(su.code)) { await DB.put('subjects', su); newCount++; }
       }
     }
 
-    // Merge attendance records
+    // Attendance — merge by key; prefer newer importedAt
     if (Array.isArray(remote.attendance)) {
-      const localAtt = await DB.getAll('attendance');
-      const localAttMap = new Map(localAtt.map(a => [a.key, a]));
+      const local    = await DB.getAll('attendance');
+      const localMap = new Map(local.map(a => [a.key, a]));
       for (const a of remote.attendance) {
-        if (!localAttMap.has(a.key)) {
-          await DB.put('attendance', a);
-          newCount++;
-        } else {
-          // If remote has newer importedAt/timestamp
-          const local = localAttMap.get(a.key);
-          if (a.importedAt && (!local.importedAt || a.importedAt > local.importedAt)) {
-            await DB.put('attendance', a);
-            newCount++;
-          }
+        const existing = localMap.get(a.key);
+        if (!existing) {
+          await DB.put('attendance', a); newCount++;
+        } else if (a.importedAt && (!existing.importedAt || a.importedAt > existing.importedAt)) {
+          await DB.put('attendance', a); newCount++;
         }
       }
     }
 
-    // Merge meta
-    if (remote.meta) {
-      if (remote.meta.allocatedPeriods) {
-        const localAlloc = await DB.getMeta('allocatedPeriods', {});
-        await DB.setMeta('allocatedPeriods', { ...remote.meta.allocatedPeriods, ...localAlloc });
-      }
+    // Meta — remote only fills in keys that are empty locally
+    if (remote.meta && remote.meta.allocatedPeriods) {
+      const localAlloc = await DB.getMeta('allocatedPeriods', {});
+      await DB.setMeta('allocatedPeriods', Object.assign({}, remote.meta.allocatedPeriods, localAlloc));
     }
 
     return newCount;
   }
 
-  // Perform full synchronization — pull → merge → push
+  // Main sync routine
   async function syncNow() {
-    if (!syncConfig.enabled || !syncConfig.syncKey) {
-      return { success: false, message: 'Please set a Class Sync Key in Settings first.' };
+    if (!_isFullyConfigured()) {
+      const msg = (!syncConfig.supabaseUrl || !syncConfig.supabaseAnonKey)
+        ? 'Please enter your Supabase URL and Anon Key in Settings first.'
+        : 'Please set a Room Key in Settings first.';
+      return { success: false, message: msg };
     }
     if (!navigator.onLine) {
       status = 'offline';
@@ -162,52 +209,25 @@ const SyncEngine = (() => {
     notify();
 
     try {
-      const { url: endpoint, isCustom } = getEndpoint();
-      const storageKey = `cr_sync_${syncConfig.syncKey.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      // PULL
       let mergedCount = 0;
-
-      // ── PULL ──────────────────────────────────────────────────────────
       try {
-        // 1. Same-browser cross-tab via localStorage
-        const localJson = localStorage.getItem(storageKey);
-        if (localJson) {
-          try { mergedCount += await mergeRemoteData(JSON.parse(localJson)); } catch (e) {}
-        }
-
-        // 2. Cloud relay — GET the shared document
-        const pullRes = await fetch(endpoint, {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-        });
-        if (pullRes.ok) {
-          const raw = await pullRes.json().catch(() => null);
-          // jsonstore.io wraps payload: { "result": {...}, "ok": true }
-          // Custom endpoints are expected to return the data directly
-          const remoteData = isCustom ? raw : (raw?.result ?? null);
-          if (remoteData && remoteData.version) {
-            mergedCount += await mergeRemoteData(remoteData);
-          }
+        const remoteData = await _sbPull();
+        if (remoteData && remoteData.version) {
+          mergedCount = await mergeRemoteData(remoteData);
         }
       } catch (pullErr) {
         console.warn('Sync pull error (will still push):', pullErr);
+        const s = String(pullErr);
+        if (s.includes('401') || s.includes('403')) {
+          status = 'error'; notify();
+          return { success: false, message: 'Auth error — check your Supabase URL and Anon Key.' };
+        }
       }
 
-      // ── PUSH ──────────────────────────────────────────────────────────
+      // PUSH
       const unified = await gatherLocalData();
-
-      // Update localStorage cache for cross-tab sync
-      try { localStorage.setItem(storageKey, JSON.stringify(unified)); } catch (e) {}
-
-      // Push merged dataset to cloud relay
-      try {
-        await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(unified),
-        });
-      } catch (pushErr) {
-        console.warn('Sync push error:', pushErr);
-      }
+      await _sbPush(unified);
 
       syncConfig.lastSync = new Date().toISOString();
       await DB.setMeta('syncConfig', syncConfig);
@@ -216,25 +236,29 @@ const SyncEngine = (() => {
       return {
         success: true,
         message: mergedCount > 0
-          ? `Synced! ${mergedCount} new record(s) pulled from other devices.`
+          ? 'Synced! ' + mergedCount + ' new record(s) pulled from other devices.'
           : 'Synced — already up to date.',
       };
     } catch (err) {
       console.error('Sync failed:', err);
       status = 'error';
       notify();
-      return { success: false, message: 'Sync error: ' + err.message };
+      const msg = String(err.message || err);
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        return { success: false, message: 'Network error — check your internet connection and Supabase URL.' };
+      }
+      return { success: false, message: 'Sync error: ' + msg };
     }
   }
 
-  // Automatic sync triggered on data change
+  // Auto-sync triggered on data changes
   function autoSync() {
     if (syncConfig.enabled && syncConfig.autoSync && navigator.onLine) {
       syncNow().catch(err => console.warn('AutoSync background error:', err));
     }
   }
 
-  // Event Listeners for network status
+  // Network event listeners
   function init() {
     window.addEventListener('online', () => {
       notify();
@@ -247,13 +271,5 @@ const SyncEngine = (() => {
     loadConfig();
   }
 
-  return {
-    init,
-    getStatus,
-    loadConfig,
-    saveConfig,
-    syncNow,
-    autoSync,
-    onStatusChange,
-  };
+  return { init, getStatus, loadConfig, saveConfig, syncNow, autoSync, onStatusChange };
 })();

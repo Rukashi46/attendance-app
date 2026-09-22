@@ -701,21 +701,19 @@ const Render = (() => {
         </div>
         <input type="file" id="backup-file" accept=".json" style="display:none" />
       </div>
-    </div>`;
-  }
-
-  function settings(d) {
-    const sc = d.syncConfig || {};
+    </div>`;\n  }\n\n  function settings(d) {\n    const sc = d.syncConfig || {};
     // Format last-sync timestamp for display
     let lastSyncLabel = 'Not synced yet';
     if (sc.lastSync) {
       try {
         const dt = new Date(sc.lastSync);
         lastSyncLabel = 'Last synced: ' + dt.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
-          + ' ' + dt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+          + ' at ' + dt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
       } catch (e) { lastSyncLabel = sc.lastSync.slice(0, 16).replace('T', ' '); }
     }
-    const dotColor = sc.syncKey ? 'var(--present)' : '#555';
+    const isConfigured = !!(sc.syncKey && sc.supabaseUrl && sc.supabaseAnonKey);
+    const dotColor     = isConfigured ? 'var(--present)' : '#555';
+    const statusLabel  = isConfigured ? lastSyncLabel : 'Not configured — fill in the fields below';
     return `
     ${topbar('Settings', { back: true })}
     <div class="content">
@@ -724,33 +722,58 @@ const Render = (() => {
         ${['system','light','dark'].map(t => `<span class="chip ${d.theme===t?'active':''}" data-action="set-theme" data-value="${t}">${t[0].toUpperCase()+t.slice(1)}</span>`).join('')}
       </div>
 
-      <div class="section-title">🔄 Cloud Sync</div>
+      <div class="section-title">☁️ Cloud Sync</div>
       <div class="card">
-        <p class="small muted" style="margin-top:0">Enter the same <b>Sync Key</b> on every device to keep attendance in sync automatically. No account needed.</p>
-        <label style="margin-top:0">Sync Key <span class="muted small">(shared across all your devices)</span></label>
+        <p class="small muted" style="margin-top:0">Sync attendance across all your devices in real time using <b>Supabase</b> (free). All devices with the same <b>Room Key</b> share data automatically.</p>
+
+        <!-- Setup guide accordion -->
+        <details style="margin-bottom:14px;border:1px solid var(--border,#2a2a35);border-radius:10px;overflow:hidden">
+          <summary style="padding:12px 14px;cursor:pointer;font-weight:600;font-size:13px;list-style:none;display:flex;align-items:center;gap:8px">
+            <span style="font-size:16px">🚀</span> First time? One-time Supabase setup (free, ~3 min)
+          </summary>
+          <div class="small muted" style="padding:0 14px 14px;line-height:1.7">
+            <b>Step 1</b> — Create a free project at <a href="https://supabase.com" target="_blank" style="color:var(--accent,#a78bfa)">supabase.com</a> → New Project<br>
+            <b>Step 2</b> — In your project, open <b>SQL Editor</b> and run:<br>
+            <pre style="background:var(--surface2,#16161f);border-radius:8px;padding:10px;margin:8px 0;overflow-x:auto;font-size:11px;white-space:pre">CREATE TABLE sync_data (
+  sync_key   TEXT PRIMARY KEY,
+  payload    JSONB NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE sync_data ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "allow all" ON sync_data
+  FOR ALL USING (true) WITH CHECK (true);</pre>
+            <b>Step 3</b> — Go to <b>Project Settings → API</b> and copy:<br>
+            &nbsp;&nbsp;• <b>Project URL</b> → paste in "Supabase URL" below<br>
+            &nbsp;&nbsp;• <b>anon / public key</b> → paste in "Anon Key" below<br>
+            <b>Step 4</b> — Pick any <b>Room Key</b> (e.g. <code>cse-3a-2026</code>) and use the same key on every device.
+          </div>
+        </details>
+
+        <label style="margin-top:0">Supabase Project URL</label>
+        <input id="sync-sb-url" placeholder="https://xxxxxxxxxxxx.supabase.co" value="${esc(sc.supabaseUrl||'')}" autocomplete="off" />
+
+        <label style="margin-top:12px">Supabase Anon Key <span class="muted small">(public — safe to paste here)</span></label>
+        <input id="sync-sb-key" placeholder="eyJhbGci…" value="${esc(sc.supabaseAnonKey||'')}" autocomplete="off" style="font-family:monospace;font-size:12px" />
+
+        <label style="margin-top:12px">Room Key <span class="muted small">(any secret phrase shared across your devices)</span></label>
         <div style="display:flex;gap:8px;align-items:center">
           <input id="sync-key" placeholder="e.g. cse-3a-2026-secret" value="${esc(sc.syncKey||'')}" style="flex:1;margin:0" />
-          <button class="btn" data-action="copy-sync-key" style="padding:0 14px;height:44px;flex-shrink:0;font-size:18px" title="Copy sync key">📋</button>
+          <button class="btn" data-action="copy-sync-key" style="padding:0 14px;height:44px;flex-shrink:0;font-size:18px" title="Copy room key">📋</button>
         </div>
-        <label style="margin-top:14px">Custom Server URL <span class="muted small">(optional — leave blank to use built-in relay)</span></label>
-        <input id="sync-url" placeholder="https://your-server.com or Google Apps Script URL" value="${esc(sc.endpointUrl||'')}" />
-        <div class="row between" style="margin-top:12px">
+
+        <div class="row between" style="margin-top:14px">
           <span class="small">Auto-sync when connected</span>
           <input type="checkbox" id="sync-auto" ${sc.autoSync!==false?'checked':''} style="width:auto;margin:0" />
         </div>
+
         <div class="btn-row" style="margin-top:14px">
           <button class="btn primary block" data-action="save-sync-config">Save &amp; Sync</button>
           <button class="btn block" data-action="sync-now">Sync Now 🔄</button>
         </div>
+
         <div class="small" style="margin-top:10px;display:flex;align-items:center;gap:6px" id="sync-status-text">
           <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};flex-shrink:0"></span>
-          ${sc.syncKey ? esc(lastSyncLabel) : 'Not configured — enter a Sync Key above'}
-        </div>
-        <div class="small muted" style="margin-top:10px;border-top:1px solid var(--border,#2a2a35);padding-top:10px">
-          <b>How to sync to another device:</b><br>
-          1. Enter the same Sync Key on Device B<br>
-          2. Tap <b>Save &amp; Sync</b> on Device B<br>
-          3. Data merges automatically — no data is lost.
+          ${esc(statusLabel)}
         </div>
       </div>
 
