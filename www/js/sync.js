@@ -50,6 +50,15 @@ const SyncEngine = (() => {
     };
   }
 
+  // Hardcoded defaults — always used as fallback so sync works out of the box
+  const DEFAULTS = {
+    enabled:         true,
+    syncKey:         syncConfig.syncKey,
+    supabaseUrl:     syncConfig.supabaseUrl,
+    supabaseAnonKey: syncConfig.supabaseAnonKey,
+    autoSync:        true,
+  };
+
   // Config persistence
   async function loadConfig() {
     const saved = await DB.getMeta('syncConfig', null);
@@ -57,11 +66,13 @@ const SyncEngine = (() => {
       syncConfig = {
         ...syncConfig,
         ...saved,
-        syncKey: saved.syncKey || saved.key || '',
-        supabaseUrl: saved.supabaseUrl || '',
-        supabaseAnonKey: saved.supabaseAnonKey || '',
-        autoSync: saved.autoSync !== undefined ? saved.autoSync
-          : saved.auto !== undefined ? saved.auto : true,
+        // Always fall back to hardcoded defaults — never let saved empty strings wipe them out
+        syncKey:         saved.syncKey         || saved.key || DEFAULTS.syncKey,
+        supabaseUrl:     saved.supabaseUrl     || DEFAULTS.supabaseUrl,
+        supabaseAnonKey: saved.supabaseAnonKey || DEFAULTS.supabaseAnonKey,
+        enabled:         saved.enabled !== undefined ? saved.enabled : DEFAULTS.enabled,
+        autoSync:        saved.autoSync !== undefined ? saved.autoSync
+                       : saved.auto    !== undefined ? saved.auto : DEFAULTS.autoSync,
       };
     }
     status = _isFullyConfigured()

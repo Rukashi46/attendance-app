@@ -117,15 +117,16 @@
     cache.classInfo = await DB.getMeta('classInfo', {});
     cache.lastImport = await DB.getMeta('lastImport', null);
     cache.allocatedPeriods = await DB.getMeta('allocatedPeriods', {});
-    // Normalize syncConfig field names
+    // Normalize syncConfig field names — fall back to hardcoded defaults if DB record is stale
     const sc = await DB.getMeta('syncConfig', null) || {};
+    const SC_DEFAULTS = { enabled: true, syncKey: 'ED-1A-2026', supabaseUrl: 'https://dnslnjlpkshmaiwkbjuu.supabase.co', supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuc2xuamxwa3NobWFpd2tiam91Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgyOTU4MjYsImV4cCI6MjA3Mzg3MTgyNn0.V2_771xTQtVzW61X8u_F4M6Jm6V5r5t5H3J9u0J2j0', autoSync: true };
     cache.syncConfig = {
-      enabled:         !!sc.enabled,
-      syncKey:         sc.syncKey         || sc.key || '',
-      supabaseUrl:     sc.supabaseUrl     || '',
-      supabaseAnonKey: sc.supabaseAnonKey || '',
+      enabled:         sc.enabled !== undefined ? !!sc.enabled : SC_DEFAULTS.enabled,
+      syncKey:         sc.syncKey         || sc.key || SC_DEFAULTS.syncKey,
+      supabaseUrl:     sc.supabaseUrl     || SC_DEFAULTS.supabaseUrl,
+      supabaseAnonKey: sc.supabaseAnonKey || SC_DEFAULTS.supabaseAnonKey,
       autoSync:        sc.autoSync        !== undefined ? sc.autoSync
-                     : sc.auto           !== undefined ? sc.auto : true,
+                     : sc.auto           !== undefined ? sc.auto : SC_DEFAULTS.autoSync,
       lastSync:        sc.lastSync        || null,
     };
     applyTheme();
