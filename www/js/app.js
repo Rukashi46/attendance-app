@@ -119,7 +119,7 @@
     cache.allocatedPeriods = await DB.getMeta('allocatedPeriods', {});
     // Normalize syncConfig field names — fall back to hardcoded defaults if DB record is stale
     const sc = await DB.getMeta('syncConfig', null) || {};
-    const SC_DEFAULTS = { enabled: true, syncKey: 'ED-1A-2026', supabaseUrl: 'https://dnslnjlpkshmaiwkbjuu.supabase.co', supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuc2xuamxwa3NobWFpd2tiam91Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgyOTU4MjYsImV4cCI6MjA3Mzg3MTgyNn0.V2_771xTQtVzW61X8u_F4M6Jm6V5r5t5H3J9u0J2j0', autoSync: true };
+    const SC_DEFAULTS = { enabled: true, syncKey: 'ED-1A-2026', supabaseUrl: 'https://dnslnjlpkshmaiwkbjuu.supabase.co', supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuc2xuamxwa3NobWFpd2tianV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNTAxNTUsImV4cCI6MjEwNTYyNjE1NX0.pv1x2Rqe0eFuODCeqcG2Sgbn17ZYZq2WNioGRd6MidM', autoSync: true };
     cache.syncConfig = {
       enabled:         sc.enabled !== undefined ? !!sc.enabled : SC_DEFAULTS.enabled,
       syncKey:         sc.syncKey         || sc.key || SC_DEFAULTS.syncKey,

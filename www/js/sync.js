@@ -29,7 +29,7 @@ const SyncEngine = (() => {
     enabled: true,
     syncKey: 'ED-1A-2026',
     supabaseUrl: 'https://dnslnjlpkshmaiwkbjuu.supabase.co',
-    supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuc2xuamxwa3NobWFpd2tiam91Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgyOTU4MjYsImV4cCI6MjA3Mzg3MTgyNn0.V2_771xTQtVzW61X8u_F4M6Jm6V5r5t5H3J9u0J2j0',
+    supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuc2xuamxwa3NobWFpd2tianV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNTAxNTUsImV4cCI6MjEwNTYyNjE1NX0.pv1x2Rqe0eFuODCeqcG2Sgbn17ZYZq2WNioGRd6MidM',
     autoSync: true,
     lastSync: null,
   };
@@ -284,3 +284,7 @@ const SyncEngine = (() => {
 
   return { init, getStatus, loadConfig, saveConfig, syncNow, autoSync, onStatusChange };
 })();
+
+// Expose to window so app.js window.SyncEngine checks work.
+// Top-level `const` does not become a window property in browsers — only `var` does.
+window.SyncEngine = SyncEngine;
