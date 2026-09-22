@@ -701,7 +701,11 @@ const Render = (() => {
         </div>
         <input type="file" id="backup-file" accept=".json" style="display:none" />
       </div>
-    </div>`;\n  }\n\n  function settings(d) {\n    const sc = d.syncConfig || {};
+    </div>`;
+  }
+
+  function settings(d) {
+    const sc = d.syncConfig || {};
     // Format last-sync timestamp for display
     let lastSyncLabel = 'Not synced yet';
     if (sc.lastSync) {
