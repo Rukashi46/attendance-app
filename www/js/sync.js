@@ -69,14 +69,14 @@ const SyncEngine = (() => {
         // Credentials are always locked to hardcoded defaults — never from DB
         supabaseUrl:     DEFAULTS.supabaseUrl,
         supabaseAnonKey: DEFAULTS.supabaseAnonKey,
-        // User-configurable fields can come from DB
+        // enabled is always true since credentials are hardcoded
+        enabled:  DEFAULTS.enabled,
+        // User-configurable fields
         syncKey:  saved.syncKey || saved.key || DEFAULTS.syncKey,
-        enabled:  saved.enabled !== undefined ? saved.enabled : DEFAULTS.enabled,
         autoSync: saved.autoSync !== undefined ? saved.autoSync
                 : saved.auto    !== undefined ? saved.auto : DEFAULTS.autoSync,
       };
     } else {
-      // No saved config at all — use full defaults
       syncConfig = { ...syncConfig, ...DEFAULTS };
     }
     status = _isFullyConfigured()

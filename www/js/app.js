@@ -502,14 +502,14 @@
     }
 
     if (action === 'save-sync-config') {
-      const syncKey        = (document.getElementById('sync-key')?.value    || '').trim();
-      const supabaseUrl    = (document.getElementById('sync-sb-url')?.value || '').trim();
-      const supabaseAnonKey = (document.getElementById('sync-sb-key')?.value || '').trim();
-      const autoSync       = !!document.getElementById('sync-auto')?.checked;
-      const enabled        = !!(syncKey && supabaseUrl && supabaseAnonKey);
+      const syncKey  = (document.getElementById('sync-key')?.value || '').trim();
+      const autoSync = !!document.getElementById('sync-auto')?.checked;
+      // URL and anon key are hardcoded in SyncEngine — not read from DOM
+      const enabled  = !!syncKey;
       cache.syncConfig = {
-        enabled, syncKey, supabaseUrl, supabaseAnonKey,
-        autoSync, lastSync: cache.syncConfig?.lastSync || null,
+        ...cache.syncConfig,
+        enabled, syncKey, autoSync,
+        lastSync: cache.syncConfig?.lastSync || null,
       };
       if (window.SyncEngine) {
         await SyncEngine.saveConfig(cache.syncConfig);
