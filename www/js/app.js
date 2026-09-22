@@ -23,9 +23,9 @@
   let pendingModalResolve = null;
 
   function showImageModal(canvas, title, filename) {
-    activeModalCanvas = canvas;
+    closeModal(); // clear any existing modal (and its stale canvas) FIRST
+    activeModalCanvas = canvas; // THEN set the new canvas, so it isn't wiped out
     const imageUrl = canvas.toDataURL('image/png');
-    closeModal();
     const modalHtml = Render.imagePreviewModal({ title, imageUrl, filename });
     const div = document.createElement('div');
     div.id = 'active-modal-container';
