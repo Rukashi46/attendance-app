@@ -66,14 +66,18 @@ const SyncEngine = (() => {
       syncConfig = {
         ...syncConfig,
         ...saved,
-        // Always fall back to hardcoded defaults — never let saved empty strings wipe them out
-        syncKey:         saved.syncKey         || saved.key || DEFAULTS.syncKey,
-        supabaseUrl:     saved.supabaseUrl     || DEFAULTS.supabaseUrl,
-        supabaseAnonKey: saved.supabaseAnonKey || DEFAULTS.supabaseAnonKey,
-        enabled:         saved.enabled !== undefined ? saved.enabled : DEFAULTS.enabled,
-        autoSync:        saved.autoSync !== undefined ? saved.autoSync
-                       : saved.auto    !== undefined ? saved.auto : DEFAULTS.autoSync,
+        // Credentials are always locked to hardcoded defaults — never from DB
+        supabaseUrl:     DEFAULTS.supabaseUrl,
+        supabaseAnonKey: DEFAULTS.supabaseAnonKey,
+        // User-configurable fields can come from DB
+        syncKey:  saved.syncKey || saved.key || DEFAULTS.syncKey,
+        enabled:  saved.enabled !== undefined ? saved.enabled : DEFAULTS.enabled,
+        autoSync: saved.autoSync !== undefined ? saved.autoSync
+                : saved.auto    !== undefined ? saved.auto : DEFAULTS.autoSync,
       };
+    } else {
+      // No saved config at all — use full defaults
+      syncConfig = { ...syncConfig, ...DEFAULTS };
     }
     status = _isFullyConfigured()
       ? (navigator.onLine ? 'synced' : 'offline')
@@ -82,7 +86,13 @@ const SyncEngine = (() => {
   }
 
   async function saveConfig(cfg) {
-    syncConfig = { ...syncConfig, ...cfg };
+    syncConfig = {
+      ...syncConfig,
+      ...cfg,
+      // Always lock credentials to hardcoded values even when user clicks Save
+      supabaseUrl:     DEFAULTS.supabaseUrl,
+      supabaseAnonKey: DEFAULTS.supabaseAnonKey,
+    };
     await DB.setMeta('syncConfig', syncConfig);
     status = _isFullyConfigured() ? 'synced' : 'unconfigured';
     notify();

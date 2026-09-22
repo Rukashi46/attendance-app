@@ -728,40 +728,17 @@ const Render = (() => {
 
       <div class="section-title">☁️ Cloud Sync</div>
       <div class="card">
-        <p class="small muted" style="margin-top:0">Sync attendance across all your devices in real time using <b>Supabase</b> (free). All devices with the same <b>Room Key</b> share data automatically.</p>
-
-        <!-- Setup guide accordion -->
-        <details style="margin-bottom:14px;border:1px solid var(--border,#2a2a35);border-radius:10px;overflow:hidden">
-          <summary style="padding:12px 14px;cursor:pointer;font-weight:600;font-size:13px;list-style:none;display:flex;align-items:center;gap:8px">
-            <span style="font-size:16px">🚀</span> First time? One-time Supabase setup (free, ~3 min)
-          </summary>
-          <div class="small muted" style="padding:0 14px 14px;line-height:1.7">
-            <b>Step 1</b> — Create a free project at <a href="https://supabase.com" target="_blank" style="color:var(--accent,#a78bfa)">supabase.com</a> → New Project<br>
-            <b>Step 2</b> — In your project, open <b>SQL Editor</b> and run:<br>
-            <pre style="background:var(--surface2,#16161f);border-radius:8px;padding:10px;margin:8px 0;overflow-x:auto;font-size:11px;white-space:pre">CREATE TABLE sync_data (
-  sync_key   TEXT PRIMARY KEY,
-  payload    JSONB NOT NULL,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-ALTER TABLE sync_data ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "allow all" ON sync_data
-  FOR ALL USING (true) WITH CHECK (true);</pre>
-            <b>Step 3</b> — Go to <b>Project Settings → API</b> and copy:<br>
-            &nbsp;&nbsp;• <b>Project URL</b> → paste in "Supabase URL" below<br>
-            &nbsp;&nbsp;• <b>anon / public key</b> → paste in "Anon Key" below<br>
-            <b>Step 4</b> — Pick any <b>Room Key</b> (e.g. <code>cse-3a-2026</code>) and use the same key on every device.
+        <div class="row between" style="margin-bottom:10px;align-items:center">
+          <div>
+            <div class="small" style="font-weight:600">Cloud Sync</div>
+            <div class="small muted" style="margin-top:2px">Syncs automatically across all devices</div>
           </div>
-        </details>
+          <span style="font-size:20px">☁️</span>
+        </div>
 
-        <label style="margin-top:0">Supabase Project URL</label>
-        <input id="sync-sb-url" placeholder="https://xxxxxxxxxxxx.supabase.co" value="${esc(sc.supabaseUrl||'')}" autocomplete="off" />
-
-        <label style="margin-top:12px">Supabase Anon Key <span class="muted small">(public — safe to paste here)</span></label>
-        <input id="sync-sb-key" placeholder="eyJhbGci…" value="${esc(sc.supabaseAnonKey||'')}" autocomplete="off" style="font-family:monospace;font-size:12px" />
-
-        <label style="margin-top:12px">Room Key <span class="muted small">(any secret phrase shared across your devices)</span></label>
+        <label style="margin-top:4px">Room Key <span class="muted small">(shared across your devices)</span></label>
         <div style="display:flex;gap:8px;align-items:center">
-          <input id="sync-key" placeholder="e.g. cse-3a-2026-secret" value="${esc(sc.syncKey||'')}" style="flex:1;margin:0" />
+          <input id="sync-key" placeholder="e.g. ED-1A-2026" value="${esc(sc.syncKey||'')}" style="flex:1;margin:0" />
           <button class="btn" data-action="copy-sync-key" style="padding:0 14px;height:44px;flex-shrink:0;font-size:18px" title="Copy room key">📋</button>
         </div>
 
