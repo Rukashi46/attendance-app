@@ -17,6 +17,7 @@
   const calendarState = { date: todayIso() };
   let lowAttThreshold = null;
   let markPeriodState = null;
+  let markSessionState = null;
   let importState = null;
   let backupPending = false;
   let activeModalCanvas = null;
@@ -179,6 +180,7 @@
     [/^#\/students\/([^/]+)$/, (m) => viewStudentDetail(m[1])],
     [/^#\/students$/, viewStudents],
     [/^#\/mark\/period\/([^/]+)\/(\d+)\/([^/]+)$/, (m) => viewMarkPeriod(m[1], parseInt(m[2], 10), decodeURIComponent(m[3]))],
+    [/^#\/mark\/session\/([^/]+)\/(morning|afternoon)$/, (m) => viewMarkSession(m[1], m[2])],
     [/^#\/mark$/, viewMarkHome],
     [/^#\/subjects\/([^/]+)$/, (m) => viewSubjectDetail(decodeURIComponent(m[1]))],
     [/^#\/subjects$/, viewSubjects],
@@ -233,11 +235,32 @@
       };
     });
     const todayRecs = cache.attendance.filter((a) => a.date === today);
+    const activeStudents = cache.students.filter((s) => s.active !== false);
+    const totalStudents = activeStudents.length || cache.students.length;
+
+    let presentTodayStr = '0/0';
+    let absentTodayCount = 0;
+
+    if (totalStudents > 0) {
+      if (todayRecs.length > 0) {
+        const absentStudents = activeStudents.filter((s) => todayRecs.some((r) => r.studentId === s.id && r.status === 'A'));
+        const presentStudents = activeStudents.filter((s) => {
+          const recs = todayRecs.filter((r) => r.studentId === s.id);
+          return recs.length > 0 && recs.every((r) => r.status === 'P');
+        });
+        presentTodayStr = `${presentStudents.length}/${totalStudents}`;
+        absentTodayCount = absentStudents.length;
+      } else {
+        presentTodayStr = `0/${totalStudents}`;
+        absentTodayCount = 0;
+      }
+    }
+
     const data = {
       overallPct: overall.pct,
-      totalStudents: cache.students.length,
-      presentToday: todayRecs.filter((r) => r.status === 'P').length,
-      absentToday: todayRecs.filter((r) => r.status === 'A').length,
+      totalStudents,
+      presentToday: presentTodayStr,
+      absentToday: absentTodayCount,
       todayDayName: dayName,
       todayIso: today,
       todayClasses,
@@ -342,6 +365,59 @@
     const { date, period, code, locked, rows } = markPeriodState;
     const subject = subjectByCode(code) || { code, name: code };
     view().innerHTML = Render.markPeriod({ date, period, subjectName: subject.name, locked, rows });
+  }
+
+  async function viewMarkSession(date, session) {
+    const dayName = Render.dayNameOf(date);
+    const isMorning = session === 'morning';
+    const tt = cache.timetable.filter((t) => t.day === dayName).sort((a, b) => a.period - b.period);
+    const sessionTT = tt.filter((t) => isMorning ? t.period <= 4 : t.period > 4);
+
+    if (sessionTT.length === 0) {
+      showToast(`No ${session} classes scheduled in timetable for ${dayName}.`, 'warn');
+      location.hash = '#/mark';
+      return;
+    }
+
+    const classes = sessionTT.map((t) => {
+      const subject = matchSubjectByNormCode(t.code);
+      return {
+        period: t.period,
+        code: subject ? subject.code : t.code,
+        subjectName: subject ? subject.name : t.subject,
+        time: t.time || '',
+      };
+    });
+
+    const activeStudents = cache.students.filter((s) => s.active !== false);
+    const sessionPeriods = new Set(classes.map((c) => c.period));
+    const existingRecs = cache.attendance.filter((a) => a.date === date && sessionPeriods.has(a.period));
+
+    const rows = activeStudents.map((s) => {
+      const stRecs = existingRecs.filter((r) => r.studentId === s.id);
+      let status = 'P';
+      if (stRecs.length > 0) {
+        const aCount = stRecs.filter((r) => r.status === 'A').length;
+        const pCount = stRecs.filter((r) => r.status === 'P').length;
+        status = aCount > pCount ? 'A' : 'P';
+      }
+      return {
+        studentId: s.id,
+        name: s.name,
+        rollNo: s.rollNo || '',
+        regNo: s.regNo || '',
+        status,
+      };
+    });
+
+    markSessionState = { date, session, classes, rows };
+    view().innerHTML = Render.markSession({ date, session, classes, rows, dayName });
+  }
+
+  function rerenderMarkSession() {
+    const { date, session, classes, rows } = markSessionState;
+    const dayName = Render.dayNameOf(date);
+    view().innerHTML = Render.markSession({ date, session, classes, rows, dayName });
   }
 
   async function viewSubjects() {
@@ -553,6 +629,103 @@
       return;
     }
 
+    if (action === 'go-mark-session') {
+      location.hash = `#/mark/session/${btn.dataset.date}/${btn.dataset.session}`;
+      return;
+    }
+    if (action === 'session-set-status') {
+      const studentId = btn.dataset.student, status = btn.dataset.status;
+      const row = markSessionState.rows.find((r) => r.studentId === studentId);
+      if (row) {
+        row.status = status;
+        rerenderMarkSession();
+      }
+      return;
+    }
+    if (action === 'session-mark-all') {
+      const status = btn.dataset.status;
+      markSessionState.rows.forEach((r) => { r.status = status; });
+      rerenderMarkSession();
+      return;
+    }
+    if (action === 'save-session') {
+      const { date, session, classes, rows } = markSessionState;
+      const records = [];
+      const nowIso = new Date().toISOString();
+      for (const c of classes) {
+        for (const r of rows) {
+          if (r.status === 'P' || r.status === 'A') {
+            const nk = nameKeyOf(r.studentId);
+            const key = `${nk}|${date}|${c.period}`;
+            records.push({
+              key,
+              studentId: r.studentId,
+              date,
+              period: c.period,
+              subjectCode: c.code,
+              status: r.status,
+              source: 'manual',
+              locked: false,
+              note: '',
+              importedAt: nowIso,
+            });
+          }
+        }
+      }
+      await DB.putMany('attendance', records);
+      if (window.SyncEngine) SyncEngine.autoSync();
+      await loadCache();
+      showToast(`${session === 'morning' ? 'Morning' : 'Afternoon'} attendance saved for ${classes.length} classes!`, 'success');
+      location.hash = '#/mark';
+      return;
+    }
+    if (action === 'quick-mark-session-present') {
+      const date = btn.dataset.date;
+      const session = btn.dataset.session;
+      const dayName = Render.dayNameOf(date);
+      const tt = cache.timetable.filter((t) => t.day === dayName).sort((a, b) => a.period - b.period);
+      const isMorning = session === 'morning';
+      const sessionTT = tt.filter((t) => isMorning ? t.period <= 4 : t.period > 4);
+      if (sessionTT.length === 0) {
+        showToast(`No ${session} classes scheduled in timetable for ${dayName}.`, 'warn');
+        return;
+      }
+      const activeStudents = cache.students.filter((s) => s.active !== false);
+      const records = [];
+      const nowIso = new Date().toISOString();
+      for (const t of sessionTT) {
+        const subject = matchSubjectByNormCode(t.code);
+        const code = subject ? subject.code : t.code;
+        for (const s of activeStudents) {
+          const nk = nameKeyOf(s.id);
+          const key = `${nk}|${date}|${t.period}`;
+          records.push({
+            key,
+            studentId: s.id,
+            date,
+            period: t.period,
+            subjectCode: code,
+            status: 'P',
+            source: 'manual',
+            locked: false,
+            note: '',
+            importedAt: nowIso,
+          });
+        }
+      }
+      await DB.putMany('attendance', records);
+      if (window.SyncEngine) SyncEngine.autoSync();
+      await loadCache();
+      showToast(`Marked all present for ${session} (${sessionTT.length} classes)!`, 'success');
+      const h = location.hash;
+      if (h === '#/dashboard' || h === '' || h === '#') {
+        await viewDashboard();
+      } else {
+        await viewMarkHome();
+      }
+      return;
+    }
+
     if (action === 'go-mark-period') {
       location.hash = `#/mark/period/${btn.dataset.date}/${btn.dataset.period}/${encodeURIComponent(btn.dataset.code)}`;
       return;
@@ -701,8 +874,12 @@
     if (action === 'close-modal') { closeModal(); return; }
     if (action === 'modal-download') {
       if (!activeModalCanvas) { showToast('Nothing to download — please regenerate the image.', 'error'); return; }
-      const ok = await ImageExport.downloadCanvas(activeModalCanvas, btn.dataset.filename);
-      showToast(ok ? `Downloaded ${btn.dataset.filename}` : 'Could not download the image. Please try again.', ok ? 'success' : 'error');
+      const res = await ImageExport.downloadCanvas(activeModalCanvas, btn.dataset.filename);
+      if (res && res.success) {
+        showToast(`Saved to ${res.path || btn.dataset.filename}!`, 'success');
+      } else {
+        showToast('Could not save the image. Please try again.', 'error');
+      }
       return;
     }
     if (action === 'modal-share') {

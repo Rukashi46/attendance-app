@@ -62,10 +62,12 @@ const Render = (() => {
     return `<span class="chip-margin ${cls}">${esc(sm.text)}</span>`;
   }
 
+  const appLogoSvg = `<svg width="24" height="24" viewBox="0 0 100 100" style="vertical-align:middle;margin-right:8px;border-radius:6px;flex-shrink:0"><rect width="100" height="100" rx="22" fill="#141420" stroke="rgba(167,139,250,0.4)" stroke-width="4"/><path d="M28 54 l16 16 l30 -38" stroke="url(#logoGrad)" stroke-width="12" fill="none" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="logoGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#a78bfa"/><stop offset="100%" stop-color="#67e8f9"/></linearGradient></defs></svg>`;
+
   function topbar(title, opts = {}) {
     return `<div class="topbar">
       ${opts.back ? `<button class="icon-btn" data-action="back">←</button>` : ''}
-      <h1>${esc(title)}</h1>
+      <h1 style="display:flex;align-items:center">${opts.logo ? appLogoSvg : ''}<span>${esc(title)}</span></h1>
       ${opts.right || ''}
     </div>`;
   }
@@ -96,8 +98,10 @@ const Render = (() => {
 
   // ---------------- Dashboard ----------------
   function dashboard(d) {
+    const morningCount = d.todayClasses.filter(c => c.period <= 4).length;
+    const afternoonCount = d.todayClasses.filter(c => c.period > 4).length;
     return `
-    ${topbar('Dashboard')}
+    ${topbar('CR Attendance', { logo: true })}
     <div class="content">
       <div class="card glow">
         <div class="stat-label">Overall class attendance</div>
@@ -105,11 +109,20 @@ const Render = (() => {
       </div>
       <div class="grid-3">
         <div class="card"><div class="stat-num">${d.totalStudents}</div><div class="stat-label">Students</div></div>
-        <div class="card"><div class="stat-num" style="color:var(--present)">${d.presentToday}</div><div class="stat-label">Present today</div></div>
+        <div class="card"><div class="stat-num" style="color:var(--present);font-size:24px">${d.presentToday}</div><div class="stat-label">Present today</div></div>
         <div class="card"><div class="stat-num" style="color:var(--absent)">${d.absentToday}</div><div class="stat-label">Absent today</div></div>
       </div>
 
       <div class="section-title">Today &middot; ${esc(d.todayDayName)}</div>
+      <div class="row" style="margin-bottom:10px;gap:8px">
+        <button class="btn sm" data-action="go-mark-session" data-date="${d.todayIso}" data-session="morning" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px">
+          🌅 Morning (${morningCount})
+        </button>
+        <button class="btn sm" data-action="go-mark-session" data-date="${d.todayIso}" data-session="afternoon" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px">
+          🌇 Afternoon (${afternoonCount})
+        </button>
+      </div>
+
       <div class="card">
         ${d.todayClasses.length === 0 ? `<div class="empty small">No classes scheduled today.</div>` :
           d.todayClasses.map(c => `
@@ -120,7 +133,10 @@ const Render = (() => {
               <div class="sub">${esc(c.time || '')}</div>
             </div>
             ${c.done
-              ? `<span class="badge present">Done · ${c.present}/${c.present + c.absent}</span>`
+              ? `<div class="row" style="gap:6px">
+                   <span class="badge present">Done · ${c.present}/${c.present + c.absent}</span>
+                   <button class="btn sm" data-action="go-mark-period" data-date="${d.todayIso}" data-period="${c.period}" data-code="${esc(c.code)}">Edit</button>
+                 </div>`
               : `<button class="btn sm primary" data-action="go-mark-period" data-date="${d.todayIso}" data-period="${c.period}" data-code="${esc(c.code)}">Mark</button>`}
           </div>`).join('')}
       </div>
@@ -279,13 +295,53 @@ const Render = (() => {
 
   // ---------------- Mark attendance ----------------
   function markHome(d) {
+    const morningClasses = d.classes.filter(c => c.period <= 4);
+    const afternoonClasses = d.classes.filter(c => c.period > 4);
+    const morningDone = morningClasses.length > 0 && morningClasses.every(c => c.marked);
+    const afternoonDone = afternoonClasses.length > 0 && afternoonClasses.every(c => c.marked);
+
     return `
     ${topbar('Mark Attendance')}
     <div class="content">
       <label style="margin-top:0">Date</label>
       <input type="date" id="mark-date" value="${d.date}" max="${d.today}" />
 
-      <div class="section-title">${esc(d.dayName)}'s classes</div>
+      <div class="section-title">Session Bulk Marking · ${esc(d.dayName)}</div>
+      <div class="grid-2">
+        <div class="card glow" style="padding:14px">
+          <div class="row between">
+            <div style="font-weight:700;font-size:15px">🌅 Morning</div>
+            ${morningDone ? `<span class="badge present">Done</span>` : ''}
+          </div>
+          <div class="sub" style="margin:4px 0 10px">${morningClasses.length} class(es) &middot; P1–P4</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <button class="btn sm primary block" data-action="go-mark-session" data-date="${d.date}" data-session="morning">
+              Mark Morning
+            </button>
+            <button class="btn sm block" data-action="quick-mark-session-present" data-date="${d.date}" data-session="morning" title="1-Tap Mark All Present">
+              All Present (1-Tap)
+            </button>
+          </div>
+        </div>
+
+        <div class="card glow" style="padding:14px">
+          <div class="row between">
+            <div style="font-weight:700;font-size:15px">🌇 Afternoon</div>
+            ${afternoonDone ? `<span class="badge present">Done</span>` : ''}
+          </div>
+          <div class="sub" style="margin:4px 0 10px">${afternoonClasses.length} class(es) &middot; P5–P8</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <button class="btn sm primary block" data-action="go-mark-session" data-date="${d.date}" data-session="afternoon">
+              Mark Afternoon
+            </button>
+            <button class="btn sm block" data-action="quick-mark-session-present" data-date="${d.date}" data-session="afternoon" title="1-Tap Mark All Present">
+              All Present (1-Tap)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-title">${esc(d.dayName)}'s Classes &middot; Edit by Subject</div>
       <div class="card">
         ${d.classes.length === 0 ? `<div class="empty">No classes scheduled this day. You can still mark a subject/period manually.</div>` :
           d.classes.map(c => `
@@ -293,7 +349,7 @@ const Render = (() => {
             <div class="avatar">P${c.period}</div>
             <div style="flex:1">
               <div class="name">${esc(c.subjectName)}</div>
-              <div class="sub">${esc(c.time||'')}${c.marked ? ` · ${c.present}P/${c.absent}A` : ''}</div>
+              <div class="sub">${esc(c.time||'')}${c.marked ? ` · <span style="color:var(--present)">${c.present}P</span> / <span style="color:var(--absent)">${c.absent}A</span>` : ' · Not marked'}</div>
             </div>
             <button class="btn sm ${c.marked ? '' : 'primary'}" data-action="go-mark-period" data-date="${d.date}" data-period="${c.period}" data-code="${esc(c.code)}">
               ${c.marked ? 'Edit' : 'Mark'}
@@ -345,6 +401,51 @@ const Render = (() => {
       </div>
       <div class="btn-row" style="margin-top:10px">
         <button class="btn ${d.locked?'':'danger'} block" data-action="toggle-lock">${d.locked ? 'Unlock period' : 'Lock period'}</button>
+      </div>
+    </div>`;
+  }
+
+  function markSession(d) {
+    const isMorning = d.session === 'morning';
+    const title = isMorning ? 'Morning Session (P1–P4)' : 'Afternoon Session (P5–P8)';
+    const icon = isMorning ? '🌅' : '🌇';
+    return `
+    ${topbar(`${icon} ${title}`, { back: true })}
+    <div class="content">
+      <div class="card" style="margin-bottom:12px">
+        <div class="row between">
+          <span class="muted small">${esc(fmtDate(d.date))} &middot; ${esc(d.dayName)}</span>
+          <span class="badge ${isMorning ? 'present' : 'warn'}">${d.classes.length} class(es) scheduled</span>
+        </div>
+        <div class="small" style="margin-top:6px;color:var(--text-dim)">
+          Applies attendance to: <b>${d.classes.map(c => `P${c.period}: ${esc(c.subjectName)}`).join(', ') || 'Scheduled session classes'}</b>
+        </div>
+      </div>
+
+      <div class="btn-row" style="margin-bottom:14px">
+        <button class="btn block" data-action="session-mark-all" data-status="P">Mark all present</button>
+        <button class="btn block" data-action="session-mark-all" data-status="A">Mark all absent</button>
+      </div>
+
+      <div class="card">
+        ${d.rows.map(r => `
+        <div class="mark-row">
+          <div class="row">
+            <div class="avatar" style="width:30px;height:30px;font-size:11px">${initials(r.name)}</div>
+            <div>
+              <span class="name" style="font-size:14px">${esc(r.name)}</span>
+              ${r.rollNo ? `<span class="sub" style="font-size:11px;margin-left:6px;color:var(--text-dim)">#${esc(r.rollNo)}</span>` : ''}
+            </div>
+          </div>
+          <div class="toggle-pa" data-student="${r.studentId}">
+            <button class="${r.status==='P'?'on p':''}" data-action="session-set-status" data-student="${r.studentId}" data-status="P">P</button>
+            <button class="${r.status==='A'?'on a':''}" data-action="session-set-status" data-student="${r.studentId}" data-status="A">A</button>
+          </div>
+        </div>`).join('')}
+      </div>
+
+      <div class="btn-row" style="margin-top:16px">
+        <button class="btn primary block" data-action="save-session">Save ${isMorning ? 'Morning' : 'Afternoon'} Attendance (${d.classes.length} Classes)</button>
       </div>
     </div>`;
   }
@@ -784,7 +885,7 @@ const Render = (() => {
     esc, initials, fmtDate, fmtDateShort, dayNameOf, pctStr, pctClass, pctColor, barRow, subjectMarginChip, DAY_NAMES,
     topbar, bottomNav,
     dashboard, studentsList, studentDetail, studentForm,
-    markHome, markPeriod,
+    markHome, markPeriod, markSession,
     subjectsList, subjectDetail,
     lowAttendance, calendarHome, calendarDay,
     reports, more, importHome, importPreview, importSuccess, backup, settings,

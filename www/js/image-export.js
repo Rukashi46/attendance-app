@@ -496,28 +496,49 @@ const ImageExport = (() => {
   }
 
   async function downloadCanvas(canvas, filename) {
+    const dataUrl = canvas.toDataURL('image/png');
+    const base64Data = dataUrl.split(',')[1];
+    const fname = filename || `attendance_${Date.now()}.png`;
+
+    // 1. Native Android APK: save directly to storage (Pictures/Attendance) via MediaStore
+    if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
+      if (window.Capacitor.Plugins && window.Capacitor.Plugins.MediaSaver) {
+        try {
+          const res = await window.Capacitor.Plugins.MediaSaver.saveImage({
+            base64: base64Data,
+            filename: fname,
+          });
+          if (res && res.success) {
+            return { success: true, path: res.path || 'Pictures/Attendance/' + fname };
+          }
+        } catch (nativeErr) {
+          console.error('MediaSaver native error:', nativeErr);
+        }
+      }
+    }
+
+    // 2. Web browser: standard <a> tag download
     try {
-      const dataUrl = canvas.toDataURL('image/png');
       const a = document.createElement('a');
       a.href = dataUrl;
-      a.download = filename || 'attendance_stats.png';
+      a.download = fname;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      return true;
+      return { success: true, path: fname };
     } catch (err) {
       console.warn('DataURL download error, attempting blob fallback:', err);
       const blob = await canvasToBlob(canvas);
-      if (!blob) return false;
+      if (!blob) return { success: false };
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = filename || 'attendance_stats.png';
+      a.download = fname;
       document.body.appendChild(a);
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-      return true;
+      return { success: true, path: fname };
     }
   }
 
