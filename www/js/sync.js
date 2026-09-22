@@ -26,12 +26,12 @@
 const SyncEngine = (() => {
 
   let syncConfig = {
-    enabled:         false,
-    syncKey:         '',
-    supabaseUrl:     '',
-    supabaseAnonKey: '',
-    autoSync:        true,
-    lastSync:        null,
+    enabled: true,
+    syncKey: 'ED-1A-2026',
+    supabaseUrl: 'https://dnslnjlpkshmaiwkbjuu.supabase.co',
+    supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuc2xuamxwa3NobWFpd2tiam91Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgyOTU4MjYsImV4cCI6MjA3Mzg3MTgyNn0.V2_771xTQtVzW61X8u_F4M6Jm6V5r5t5H3J9u0J2j0',
+    autoSync: true,
+    lastSync: null,
   };
 
   let status = 'unconfigured'; // 'unconfigured' | 'synced' | 'syncing' | 'offline' | 'error'
@@ -42,11 +42,11 @@ const SyncEngine = (() => {
 
   function getStatus() {
     return {
-      status:   !navigator.onLine ? 'offline' : status,
+      status: !navigator.onLine ? 'offline' : status,
       isOnline: navigator.onLine,
       lastSync: syncConfig.lastSync,
-      syncKey:  syncConfig.syncKey,
-      enabled:  syncConfig.enabled,
+      syncKey: syncConfig.syncKey,
+      enabled: syncConfig.enabled,
     };
   }
 
@@ -57,11 +57,11 @@ const SyncEngine = (() => {
       syncConfig = {
         ...syncConfig,
         ...saved,
-        syncKey:         saved.syncKey         || saved.key || '',
-        supabaseUrl:     saved.supabaseUrl     || '',
+        syncKey: saved.syncKey || saved.key || '',
+        supabaseUrl: saved.supabaseUrl || '',
         supabaseAnonKey: saved.supabaseAnonKey || '',
         autoSync: saved.autoSync !== undefined ? saved.autoSync
-                : saved.auto    !== undefined ? saved.auto : true,
+          : saved.auto !== undefined ? saved.auto : true,
       };
     }
     status = _isFullyConfigured()
@@ -89,10 +89,10 @@ const SyncEngine = (() => {
   // Supabase REST helpers
   function _sbHeaders() {
     return {
-      'Content-Type':  'application/json',
-      'apikey':         syncConfig.supabaseAnonKey,
+      'Content-Type': 'application/json',
+      'apikey': syncConfig.supabaseAnonKey,
       'Authorization': 'Bearer ' + syncConfig.supabaseAnonKey,
-      'Prefer':         'return=minimal',
+      'Prefer': 'return=minimal',
     };
   }
 
@@ -100,7 +100,7 @@ const SyncEngine = (() => {
   async function _sbPull() {
     const base = syncConfig.supabaseUrl.replace(/\/$/, '');
     const url = base + '/rest/v1/sync_data?sync_key=eq.' +
-                encodeURIComponent(syncConfig.syncKey) + '&select=payload';
+      encodeURIComponent(syncConfig.syncKey) + '&select=payload';
     const res = await fetch(url, { method: 'GET', headers: _sbHeaders() });
     if (!res.ok) throw new Error('Supabase pull failed: ' + res.status + ' ' + res.statusText);
     const rows = await res.json();
@@ -116,8 +116,8 @@ const SyncEngine = (() => {
       'Prefer': 'resolution=merge-duplicates,return=minimal',
     };
     const body = JSON.stringify({
-      sync_key:   syncConfig.syncKey,
-      payload:    data,
+      sync_key: syncConfig.syncKey,
+      payload: data,
       updated_at: new Date().toISOString(),
     });
     const res = await fetch(url, { method: 'POST', headers, body });
@@ -130,16 +130,16 @@ const SyncEngine = (() => {
   // Gather full local dataset
   async function gatherLocalData() {
     return {
-      version:    2,
-      syncKey:    syncConfig.syncKey,
-      timestamp:  new Date().toISOString(),
-      students:   await DB.getAll('students'),
-      subjects:   await DB.getAll('subjects'),
-      timetable:  await DB.getAll('timetable'),
+      version: 2,
+      syncKey: syncConfig.syncKey,
+      timestamp: new Date().toISOString(),
+      students: await DB.getAll('students'),
+      subjects: await DB.getAll('subjects'),
+      timetable: await DB.getAll('timetable'),
       attendance: await DB.getAll('attendance'),
       meta: {
-        classInfo:        await DB.getMeta('classInfo', {}),
-        threshold:        await DB.getMeta('threshold', 75),
+        classInfo: await DB.getMeta('classInfo', {}),
+        threshold: await DB.getMeta('threshold', 75),
         allocatedPeriods: await DB.getMeta('allocatedPeriods', {}),
       },
     };
@@ -170,7 +170,7 @@ const SyncEngine = (() => {
 
     // Attendance — merge by key; prefer newer importedAt
     if (Array.isArray(remote.attendance)) {
-      const local    = await DB.getAll('attendance');
+      const local = await DB.getAll('attendance');
       const localMap = new Map(local.map(a => [a.key, a]));
       for (const a of remote.attendance) {
         const existing = localMap.get(a.key);
