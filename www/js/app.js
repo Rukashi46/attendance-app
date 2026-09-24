@@ -120,12 +120,19 @@
     cache.allocatedPeriods = await DB.getMeta('allocatedPeriods', {});
     // Normalize syncConfig field names — fall back to hardcoded defaults if DB record is stale
     const sc = await DB.getMeta('syncConfig', null) || {};
-    const SC_DEFAULTS = { enabled: true, syncKey: 'ED-1A-2026', supabaseUrl: 'https://dnslnjlpkshmaiwkbjuu.supabase.co', supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuc2xuamxwa3NobWFpd2tianV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNTAxNTUsImV4cCI6MjEwNTYyNjE1NX0.pv1x2Rqe0eFuODCeqcG2Sgbn17ZYZq2WNioGRd6MidM', autoSync: true };
+    const SC_DEFAULTS = {
+      enabled: false,
+      syncKey: '',
+      supabaseUrl: 'https://dnslnjlpkshmaiwkbjuu.supabase.co',
+      supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuc2xuamxwa3NobWFpd2tianV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNTAxNTUsImV4cCI6MjEwNTYyNjE1NX0.pv1x2Rqe0eFuODCeqcG2Sgbn17ZYZq2WNioGRd6MidM',
+      autoSync: true
+    };
+    const savedKey = (sc.syncKey || sc.key || '').trim();
     cache.syncConfig = {
-      enabled:         sc.enabled !== undefined ? !!sc.enabled : SC_DEFAULTS.enabled,
-      syncKey:         sc.syncKey         || sc.key || SC_DEFAULTS.syncKey,
-      supabaseUrl:     sc.supabaseUrl     || SC_DEFAULTS.supabaseUrl,
-      supabaseAnonKey: sc.supabaseAnonKey || SC_DEFAULTS.supabaseAnonKey,
+      enabled:         sc.enabled !== undefined ? !!sc.enabled : !!savedKey,
+      syncKey:         savedKey,
+      supabaseUrl:     SC_DEFAULTS.supabaseUrl,
+      supabaseAnonKey: SC_DEFAULTS.supabaseAnonKey,
       autoSync:        sc.autoSync        !== undefined ? sc.autoSync
                      : sc.auto           !== undefined ? sc.auto : SC_DEFAULTS.autoSync,
       lastSync:        sc.lastSync        || null,
@@ -152,9 +159,19 @@
             : 'Synced',
           offline:      'Offline — changes saved locally',
           error:        'Sync error — tap Sync Now to retry',
-          unconfigured: 'Not configured — enter a Sync Key above',
+          unconfigured: 'Not configured — enter a Room Key above',
         }[s.status] || 'Unknown';
         el.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};flex-shrink:0"></span> ${label}`;
+      });
+
+      // Automatically refresh cache and active view when background or remote sync pulls updates
+      window.addEventListener('app:data-synced', async (e) => {
+        await loadCache();
+        const currentRoute = (window.location.hash.slice(1).split('?')[0]) || 'dashboard';
+        navigate(currentRoute);
+        if (e.detail && e.detail.count > 0) {
+          showToast(`Synced ${e.detail.count} update(s) automatically.`, 'info', 2200);
+        }
       });
     }
   }
@@ -589,6 +606,7 @@
       };
       if (window.SyncEngine) {
         await SyncEngine.saveConfig(cache.syncConfig);
+        showToast('Connecting & syncing room…', 'info', 2000);
         const res = await SyncEngine.syncNow();
         await loadCache();
         showToast(res.message, res.success ? 'success' : 'error');
@@ -1030,6 +1048,20 @@
   }
 
   // ---- Export helpers -------------------------------------------------
+  function strToBase64(str) {
+    try {
+      const bytes = new TextEncoder().encode(str);
+      let binary = '';
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    } catch (e) {
+      return btoa(unescape(encodeURIComponent(str)));
+    }
+  }
+
   function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1038,29 +1070,180 @@
     setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
 
+  async function exportFile({ filename, mimeType, base64Data, blobData, textData, title }) {
+    if (!base64Data) {
+      if (textData) {
+        base64Data = strToBase64(textData);
+      } else if (blobData) {
+        base64Data = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const res = reader.result || '';
+            const b64 = String(res).split(',')[1] || '';
+            resolve(b64);
+          };
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(blobData);
+        });
+      }
+    }
+
+    if (!blobData) {
+      if (textData) {
+        blobData = new Blob([textData], { type: mimeType || 'text/plain' });
+      } else if (base64Data) {
+        try {
+          const byteChars = atob(base64Data);
+          const byteNums = new Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) {
+            byteNums[i] = byteChars.charCodeAt(i);
+          }
+          blobData = new Blob([new Uint8Array(byteNums)], { type: mimeType || 'application/octet-stream' });
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+
+    // 1. Android Native Platform (Capacitor APK)
+    if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
+      let savedPath = null;
+
+      // Save directly to Downloads/Attendance via MediaSaver native plugin
+      if (window.Capacitor.Plugins && window.Capacitor.Plugins.MediaSaver && window.Capacitor.Plugins.MediaSaver.saveFile) {
+        try {
+          const res = await window.Capacitor.Plugins.MediaSaver.saveFile({
+            base64: base64Data,
+            filename: filename,
+            mimeType: mimeType || 'application/octet-stream',
+          });
+          if (res && res.success) {
+            savedPath = res.path || `Downloads/Attendance/${filename}`;
+          }
+        } catch (err) {
+          console.warn('MediaSaver.saveFile error:', err);
+        }
+      }
+
+      // Also trigger Android Native Share sheet (allows opening directly in Excel/Sheets/WhatsApp/Drive)
+      let shareInvoked = false;
+      if (window.Capacitor.Plugins && window.Capacitor.Plugins.Filesystem) {
+        try {
+          const writeRes = await window.Capacitor.Plugins.Filesystem.writeFile({
+            path: filename,
+            data: base64Data,
+            directory: 'CACHE',
+          });
+          if (window.Capacitor.Plugins.Share) {
+            await window.Capacitor.Plugins.Share.share({
+              title: title || filename,
+              url: writeRes.uri,
+            });
+            shareInvoked = true;
+          }
+        } catch (shareErr) {
+          if (shareErr && (shareErr.message || '').toLowerCase().includes('cancel')) {
+            shareInvoked = true; // User dismissed share sheet
+          } else {
+            console.warn('Capacitor Share error:', shareErr);
+          }
+        }
+      }
+
+      if (savedPath) {
+        showToast(`Saved to ${savedPath}!`, 'success', 3500);
+        return { success: true, path: savedPath };
+      } else if (shareInvoked) {
+        showToast(`Exported ${filename}`, 'success');
+        return { success: true, path: filename };
+      } else {
+        showToast(`Failed to save export to device.`, 'error');
+        return { success: false };
+      }
+    }
+
+    // 2. Web browser: standard blob download & feedback toast
+    if (blobData) {
+      try {
+        downloadBlob(blobData, filename);
+        showToast(`Exported ${filename}`, 'success');
+        return { success: true, path: filename };
+      } catch (err) {
+        console.error('Download error:', err);
+        showToast('Download error: ' + err.message, 'error');
+        return { success: false };
+      }
+    }
+
+    showToast('Failed to generate export file.', 'error');
+    return { success: false };
+  }
+
   async function exportAttendance(format) {
-    const rows = cache.attendance
+    const validRows = cache.attendance
       .filter((a) => a.status === 'P' || a.status === 'A')
-      .sort((a, b) => a.date.localeCompare(b.date) || a.period - b.period)
-      .map((a) => ({
-        Date: a.date,
-        Period: a.period,
-        Subject: a.subjectCode,
-        RegisterNo: (studentById(a.studentId) || {}).regNo || '',
-        RollNo: (studentById(a.studentId) || {}).rollNo || '',
-        Name: (studentById(a.studentId) || {}).name || '',
-        Status: a.status === 'P' ? 'Present' : 'Absent',
-      }));
+      .sort((a, b) => a.date.localeCompare(b.date) || a.period - b.period);
+
+    if (validRows.length === 0) {
+      showToast('No attendance records found to export. Mark attendance first.', 'error');
+      return;
+    }
+
+    const rows = validRows.map((a) => ({
+      Date: a.date,
+      Period: a.period,
+      Subject: a.subjectCode,
+      RegisterNo: (studentById(a.studentId) || {}).regNo || '',
+      RollNo: (studentById(a.studentId) || {}).rollNo || '',
+      Name: (studentById(a.studentId) || {}).name || '',
+      Status: a.status === 'P' ? 'Present' : 'Absent',
+    }));
+
+    const dateStr = todayIso();
+    const filename = `attendance_export_${dateStr}.${format}`;
+
     if (format === 'csv') {
-      const header = Object.keys(rows[0] || { Date: '', Period: '', Subject: '', RegisterNo: '', RollNo: '', Name: '', Status: '' });
-      const csv = [header.join(',')].concat(rows.map((r) => header.map((h) => `"${String(r[h]).replace(/"/g, '""')}"`).join(','))).join('\n');
-      downloadBlob(new Blob([csv], { type: 'text/csv' }), 'attendance_export.csv');
+      const headers = ['Date', 'Period', 'Subject', 'RegisterNo', 'RollNo', 'Name', 'Status'];
+      const csv = '\uFEFF' + [headers.join(',')].concat(
+        rows.map((r) => headers.map((h) => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(','))
+      ).join('\r\n');
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      await exportFile({
+        filename,
+        mimeType: 'text/csv',
+        textData: csv,
+        blobData: blob,
+        title: 'Attendance CSV Export',
+      });
     } else {
-      const ws = XLSX.utils.json_to_sheet(rows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
-      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      downloadBlob(new Blob([wbout], { type: 'application/octet-stream' }), 'attendance_export.xlsx');
+      if (typeof XLSX === 'undefined') {
+        showToast('Excel exporter not available. Exporting as CSV instead…', 'info');
+        return exportAttendance('csv');
+      }
+      try {
+        const headers = ['Date', 'Period', 'Subject', 'RegisterNo', 'RollNo', 'Name', 'Status'];
+        const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
+        ws['!cols'] = headers.map(h => ({
+          wch: Math.max(h.length, ...rows.map(r => String(r[h] ?? '').length)) + 3
+        }));
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
+        const base64Data = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
+        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+        await exportFile({
+          filename,
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          base64Data,
+          blobData: blob,
+          title: 'Attendance Excel Export',
+        });
+      } catch (err) {
+        console.error('Excel generation error:', err);
+        showToast('Excel generation failed: ' + err.message, 'error');
+      }
     }
   }
 
@@ -1079,7 +1262,16 @@
         syncConfig: cache.syncConfig,
       },
     };
-    downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), `attendance_backup_${todayIso()}.json`);
+    const jsonStr = JSON.stringify(data, null, 2);
+    const filename = `attendance_backup_${todayIso()}.json`;
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    await exportFile({
+      filename,
+      mimeType: 'application/json',
+      textData: jsonStr,
+      blobData: blob,
+      title: 'Attendance Backup',
+    });
   }
 
   // ------------------------------------------------------------------
