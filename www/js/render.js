@@ -23,6 +23,20 @@ const Render = (() => {
     const d = new Date(iso + 'T00:00:00');
     return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
   }
+  function fmtMonth(ym) {
+    if (!ym) return '';
+    const parts = ym.split('-');
+    if (parts.length < 2) return ym;
+    const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+    return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  }
+  function fmtMonthShort(ym) {
+    if (!ym) return '';
+    const parts = ym.split('-');
+    if (parts.length < 2) return ym;
+    const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+    return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+  }
   function dayNameOf(iso) {
     const d = new Date(iso + 'T00:00:00');
     return DAY_NAMES[d.getDay()];
@@ -104,8 +118,18 @@ const Render = (() => {
     ${topbar('CR Attendance', { logo: true })}
     <div class="content">
       <div class="card glow">
-        <div class="stat-label">Overall class attendance</div>
-        <div class="stat-num">${pctStr(d.overallPct)}</div>
+        <div class="row between">
+          <div>
+            <div class="stat-label">Overall class attendance</div>
+            <div class="stat-num">${pctStr(d.overallPct)}</div>
+          </div>
+          ${d.currentMonthPct !== undefined && d.currentMonthPct !== null ? `
+          <div style="text-align:right">
+            <div class="stat-label">This Month (${esc(d.currentMonthShort || '')})</div>
+            <div class="stat-num" style="font-size:22px;color:${pctColor(d.currentMonthPct, d.threshold)}">${pctStr(d.currentMonthPct)}</div>
+            <a href="#/reports" class="sub" style="text-decoration:none;color:var(--accent2);display:inline-block;margin-top:2px">View Monthly Stats &rarr;</a>
+          </div>` : ''}
+        </div>
       </div>
       <div class="grid-3">
         <div class="card"><div class="stat-num">${d.totalStudents}</div><div class="stat-label">Students</div></div>
@@ -224,6 +248,35 @@ const Render = (() => {
           <span class="small muted">Roll ${esc(s.rollNo||'—')} ${s.regNo ? '· Reg. ' + esc(s.regNo) : ''}</span>
         </div>
         <button class="btn primary block" style="margin-top:12px" data-action="export-student-card" data-id="${s.id}">Export Report Card as Image</button>
+      </div>
+
+      <div class="section-title">Monthly Attendance Percentage</div>
+      <div>
+        ${(!d.monthlyStats || d.monthlyStats.length === 0) ? `<div class="card"><div class="empty small">No monthly records yet.</div></div>` :
+          d.monthlyStats.map(m => {
+            const cls = pctClass(m.pct, d.threshold);
+            return `
+            <div class="sub-card">
+              <div class="sub-card-header">
+                <div>
+                  <div class="name">${esc(m.label)}</div>
+                  <div class="sub">${m.total} class(es) conducted</div>
+                </div>
+                <div style="text-align:right">
+                  <div class="name" style="color:${m.pct===null?'var(--text-dim)':pctColor(m.pct, d.threshold)}">${pctStr(m.pct)}</div>
+                  ${marginBadge(m.margin)}
+                </div>
+              </div>
+              <div class="bar-track" style="margin-bottom:8px">
+                <div class="bar-fill ${cls}" style="width:${m.pct===null?0:Math.min(100,m.pct)}%"></div>
+              </div>
+              <div class="sub-metrics">
+                <span>Total: <b>${m.total}</b></span>
+                <span style="color:var(--present)">Attended: <b>${m.present}</b></span>
+                <span style="color:${m.absent > 0 ? 'var(--absent)' : 'inherit'}">Missed: <b>${m.absent}</b></span>
+              </div>
+            </div>`;
+          }).join('')}
       </div>
 
       <div class="section-title">Subject Breakdown &amp; Margins</div>
@@ -496,6 +549,27 @@ const Render = (() => {
         <button class="btn primary block" style="margin-top:12px" data-action="export-subject-card" data-code="${esc(d.code)}">Export Subject Stats as Image</button>
       </div>
 
+      <div class="section-title">Monthly Attendance Trend</div>
+      <div class="card">
+        ${(!d.monthlyStats || d.monthlyStats.length === 0) ? `<div class="empty small">No monthly records yet.</div>` :
+          d.monthlyStats.map(m => {
+            const cls = pctClass(m.pct, d.threshold);
+            return `
+            <div class="list-item" style="padding:10px 0">
+              <div style="flex:1">
+                <div class="name" style="font-size:14px">${esc(m.label)}</div>
+                <div class="sub">${m.conducted} classes conducted &middot; <span style="color:var(--present)">${m.present}P</span> / <span style="color:${m.absent > 0 ? 'var(--absent)' : 'inherit'}">${m.absent}A</span></div>
+                <div class="bar-track" style="margin-top:6px">
+                  <div class="bar-fill ${cls}" style="width:${m.pct===null?0:Math.min(100,m.pct)}%"></div>
+                </div>
+              </div>
+              <div style="text-align:right;margin-left:14px">
+                <div class="name" style="color:${m.pct===null?'var(--text-dim)':pctColor(m.pct, d.threshold)}">${pctStr(m.pct)}</div>
+              </div>
+            </div>`;
+          }).join('')}
+      </div>
+
       <div class="section-title">Filter Students</div>
       <div class="tabbar" style="margin-bottom:10px">
         <span class="chip ${filter==='all'?'active':''}" data-action="filter-subject-students" data-filter="all" data-code="${esc(d.code)}">All (${d.students.length})</span>
@@ -651,14 +725,175 @@ const Render = (() => {
         </div>
       </div>
 
-      <div class="section-title">This month</div>
-      <div class="card">
-        <div class="grid-3">
-          <div><div class="stat-num" style="font-size:20px">${d.month.workingPeriods}</div><div class="stat-label">Working periods</div></div>
-          <div><div class="stat-num" style="font-size:20px;color:var(--present)">${d.month.present}</div><div class="stat-label">Present records</div></div>
-          <div><div class="stat-num" style="font-size:20px;color:var(--absent)">${d.month.absent}</div><div class="stat-label">Absent records</div></div>
+      <!-- Monthly Attendance Percentage Statistics -->
+      <div class="section-title">Monthly Attendance Percentage Statistics</div>
+      ${d.monthlyList && d.monthlyList.length > 0 ? `
+      <div class="tabbar" style="margin-bottom:12px">
+        <span class="chip ${d.selectedMonth === 'all' ? 'active' : ''}" data-action="select-report-month" data-month="all">
+          All Months Overview (${d.monthlyList.length})
+        </span>
+        ${d.monthlyList.map(m => `
+        <span class="chip ${d.selectedMonth === m.key ? 'active' : ''}" data-action="select-report-month" data-month="${m.key}">
+          ${esc(m.shortLabel)} &middot; <b style="color:${d.selectedMonth === m.key ? 'inherit' : pctColor(m.pct, d.threshold)}">${pctStr(m.pct)}</b>
+        </span>`).join('')}
+      </div>` : ''}
+
+      ${(!d.monthlyList || d.monthlyList.length === 0) ? `
+      <div class="card"><div class="empty small">No attendance records found for monthly calculation.</div></div>` :
+      d.selectedMonth === 'all' ? `
+      <!-- All Months Comparison Cards -->
+      <div style="display:flex;flex-direction:column;gap:12px">
+        ${d.monthlyList.map(m => {
+          const cls = pctClass(m.pct, d.threshold);
+          return `
+          <div class="card" style="margin-bottom:0">
+            <div class="row between" style="margin-bottom:8px">
+              <div>
+                <div class="name" style="font-size:16px">${esc(m.label)}</div>
+                <div class="sub">${m.workingPeriods} working periods &middot; ${m.uniqueDates} day(s)</div>
+              </div>
+              <div style="text-align:right">
+                <div class="stat-num" style="font-size:22px;color:${pctColor(m.pct, d.threshold)}">${pctStr(m.pct)}</div>
+                <span class="badge ${cls === 'bad' ? 'absent' : (cls === 'warn' ? 'warn' : 'present')}">${cls === 'bad' ? 'Shortage' : (cls === 'warn' ? 'Warning' : 'Good')}</span>
+              </div>
+            </div>
+            <div class="bar-track" style="margin-bottom:10px">
+              <div class="bar-fill ${cls}" style="width:${m.pct===null?0:Math.min(100,m.pct)}%"></div>
+            </div>
+            <div class="grid-3" style="margin-bottom:10px">
+              <div><div class="stat-num" style="font-size:16px">${m.workingPeriods}</div><div class="stat-label">Conducted</div></div>
+              <div><div class="stat-num" style="font-size:16px;color:var(--present)">${m.present}</div><div class="stat-label">Present</div></div>
+              <div><div class="stat-num" style="font-size:16px;color:var(--absent)">${m.absent}</div><div class="stat-label">Absent</div></div>
+            </div>
+            <div class="row between" style="padding-top:8px;border-top:1px solid var(--card-border)">
+              <span class="small muted">
+                <span style="color:var(--present)">${m.aboveCount} &ge; ${d.threshold}%</span> &middot;
+                <span style="color:${m.belowCount > 0 ? 'var(--absent)' : 'inherit'}">${m.belowCount} &lt; ${d.threshold}%</span>
+              </span>
+              <button class="btn sm" data-action="select-report-month" data-month="${m.key}">View Details &rarr;</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>` : `
+      <!-- Single Month Drill-down View -->
+      ${(() => {
+        const m = d.selectedMonthData || d.monthlyList[0];
+        if (!m) return '';
+        const cls = pctClass(m.pct, d.threshold);
+        const filter = d.monthlyStudentFilter || 'all';
+        let displayedStudents = m.students;
+        if (filter === 'below') displayedStudents = m.students.filter(s => s.pct !== null && s.pct < (d.threshold || 75));
+        return `
+        <div class="card glow">
+          <div class="row between">
+            <div>
+              <div class="stat-label">${esc(m.label)} Class Attendance</div>
+              <div class="stat-num" style="color:${pctColor(m.pct, d.threshold)}">${pctStr(m.pct)}</div>
+            </div>
+            <div style="text-align:right">
+              <span class="badge ${cls === 'bad' ? 'absent' : (cls === 'warn' ? 'warn' : 'present')}" style="font-size:13px;padding:4px 10px">
+                ${cls === 'bad' ? 'Shortage (<' + d.threshold + '%)' : (cls === 'warn' ? 'Warning' : 'On Track')}
+              </span>
+              <div class="sub" style="margin-top:4px">Target: ${d.threshold}%</div>
+            </div>
+          </div>
+          <div class="bar-track" style="margin-top:10px;margin-bottom:12px">
+            <div class="bar-fill ${cls}" style="width:${m.pct===null?0:Math.min(100,m.pct)}%"></div>
+          </div>
+          <div class="grid-3" style="margin-top:10px">
+            <div><div class="stat-num" style="font-size:18px">${m.workingPeriods}</div><div class="stat-label">Working Periods</div></div>
+            <div><div class="stat-num" style="font-size:18px;color:var(--present)">${m.present}</div><div class="stat-label">Present Records</div></div>
+            <div><div class="stat-num" style="font-size:18px;color:var(--absent)">${m.absent}</div><div class="stat-label">Absent Records</div></div>
+          </div>
+          <div class="row between" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--card-border)">
+            <span class="small muted">
+              Students: <b>${m.students.length}</b> total &middot;
+              <b style="color:var(--present)">${m.aboveCount} &ge; ${d.threshold}%</b> &middot;
+              <b style="color:${m.belowCount > 0 ? 'var(--absent)' : 'inherit'}">${m.belowCount} &lt; ${d.threshold}%</b>
+            </span>
+          </div>
+          <div class="btn-row" style="margin-top:12px">
+            <button class="btn sm primary block" data-action="export-monthly-summary-img" data-month="${m.key}">
+              Export ${esc(m.shortLabel)} Card (PNG)
+            </button>
+            <button class="btn sm block" data-action="export-monthly" data-format="xlsx" data-month="${m.key}">
+              Export ${esc(m.shortLabel)} Excel
+            </button>
+          </div>
         </div>
-      </div>
+
+        <!-- Monthly Subject Breakdown -->
+        <div class="section-title">${esc(m.shortLabel)} Subject Attendance %</div>
+        <div class="card">
+          <div class="stats-table-wrap">
+            <table class="stats-table">
+              <thead>
+                <tr>
+                  <th>Subject</th>
+                  <th>Conducted</th>
+                  <th>Monthly %</th>
+                  <th>Present</th>
+                  <th>Absent</th>
+                  <th>&lt;${d.threshold}%</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${m.subjects.length === 0 ? `<tr><td colspan="6" class="empty small">No subject records for this month.</td></tr>` :
+                  m.subjects.map(s => {
+                    const subName = d.subjectNames?.[s.code] || '';
+                    return `
+                    <tr>
+                      <td>
+                        <a href="#/subjects/${encodeURIComponent(s.code)}" style="text-decoration:none">
+                          <b>${esc(s.code)}</b>
+                          ${subName ? `<div class="sub" style="font-size:11px">${esc(subName)}</div>` : ''}
+                        </a>
+                      </td>
+                      <td><b>${s.conducted}</b></td>
+                      <td><span style="color:${pctColor(s.pct, d.threshold)}"><b>${pctStr(s.pct)}</b></span></td>
+                      <td style="color:var(--present)">${s.present}</td>
+                      <td style="color:${s.absent > 0 ? 'var(--absent)' : 'inherit'}">${s.absent}</td>
+                      <td><span class="badge ${s.below > 0 ? 'absent' : 'muted'}">${s.below}</span></td>
+                    </tr>`;
+                  }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Monthly Student Breakdown -->
+        <div class="section-title">${esc(m.shortLabel)} Student Attendance % (${displayedStudents.length})</div>
+        <div class="tabbar" style="margin-bottom:10px">
+          <span class="chip ${filter==='all'?'active':''}" data-action="filter-monthly-students" data-filter="all">All (${m.students.length})</span>
+          <span class="chip ${filter==='below'?'active':''}" data-action="filter-monthly-students" data-filter="below">Below ${d.threshold}% (${m.belowCount})</span>
+        </div>
+        <div class="card">
+          ${displayedStudents.length === 0 ? `<div class="empty small">No students in this view.</div>` :
+            displayedStudents.map(s => {
+              const st = d.studentMap?.[s.studentId] || {};
+              return `
+              <a href="#/students/${s.studentId}" class="list-item" style="text-decoration:none;color:inherit">
+                <div class="avatar">${initials(st.name || 'Student')}</div>
+                <div style="flex:1">
+                  <div class="name">${esc(st.name || s.studentId)}</div>
+                  <div class="sub">
+                    Roll ${esc(st.rollNo || '—')} &middot;
+                    Attended: <b>${s.present}</b>/${s.total} &middot;
+                    <span style="color:${s.absent > 0 ? 'var(--absent)' : 'inherit'}">${s.absent} absent</span>
+                  </div>
+                </div>
+                <div style="text-align:right">
+                  <div class="name" style="color:${s.pct===null?'var(--text-dim)':pctColor(s.pct, d.threshold)}">${pctStr(s.pct)}</div>
+                  <span class="chip-margin ${s.pct >= d.threshold ? 'safe' : 'need'}" style="font-size:10.5px">
+                    ${s.pct >= d.threshold ? 'Safe' : 'Shortage'}
+                  </span>
+                </div>
+              </a>`;
+            }).join('')}
+        </div>
+        `;
+      })()}
+      `}
 
       <div class="section-title">File Export (Spreadsheets)</div>
       <div class="card btn-row">

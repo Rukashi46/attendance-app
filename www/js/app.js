@@ -15,6 +15,7 @@
   const studentsState = { query: '', sort: 'name' };
   const markHomeState = { date: todayIso() };
   const calendarState = { date: todayIso() };
+  const reportsState = { selectedMonth: null, monthlyStudentFilter: 'all' };
   let lowAttThreshold = null;
   let markPeriodState = null;
   let markSessionState = null;
@@ -273,8 +274,13 @@
       }
     }
 
+    const now = new Date();
+    const curMonthStats = Calc.monthly(cache.attendance, now.getFullYear(), now.getMonth() + 1);
+
     const data = {
       overallPct: overall.pct,
+      currentMonthPct: curMonthStats.pct,
+      currentMonthShort: curMonthStats.shortLabel,
       totalStudents,
       presentToday: presentTodayStr,
       absentToday: absentTodayCount,
@@ -331,9 +337,11 @@
       byDate.get(a.date)[a.status === 'P' ? 'present' : 'absent']++;
     });
     const recentDays = [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
+    const monthlyStats = Calc.studentMonthlyStats(cache.attendance, id, cache.threshold);
     view().innerHTML = Render.studentDetail({
       student: s,
       stats: overall,
+      monthlyStats,
       subjectNames,
       recentDays,
       threshold: cache.threshold,
@@ -451,11 +459,13 @@
     const students = summary.students.map((r) => ({ ...r, name: (studentById(r.studentId) || {}).name || '—' }));
     const above = students.filter((s) => s.pct !== null && s.pct >= cache.threshold).length;
     const below = students.filter((s) => s.pct !== null && s.pct < cache.threshold).length;
+    const monthlyStats = Calc.subjectMonthlyStats(cache.attendance, code);
     view().innerHTML = Render.subjectDetail({
       code: subject.code,
       name: subject.name,
       pct: summary.pct,
       conducted: summary.conducted,
+      monthlyStats,
       students,
       above,
       below,
@@ -500,16 +510,29 @@
       };
     });
     subjects.sort((a, b) => a.code.localeCompare(b.code));
-    const now = new Date();
-    const month = Calc.monthly(cache.attendance, now.getFullYear(), now.getMonth() + 1);
+    const monthlyList = Calc.allMonthlyStats(cache.attendance, cache.threshold, cache.allocatedPeriods);
+    if (!reportsState.selectedMonth && monthlyList.length > 0) {
+      reportsState.selectedMonth = monthlyList[0].key;
+    }
+    const selectedMonth = reportsState.selectedMonth || (monthlyList[0] ? monthlyList[0].key : 'all');
+    const selectedMonthData = monthlyList.find((m) => m.key === selectedMonth) || null;
+
     const studentsList = cache.students
       .filter((s) => s.active !== false)
       .sort((a, b) => a.name.localeCompare(b.name));
+    const studentMap = Object.fromEntries(cache.students.map((s) => [s.id, s]));
+    const subjectNames = Object.fromEntries(cache.subjects.map((s) => [s.code, s.name]));
+
     view().innerHTML = Render.reports({
       classPct: overall.pct,
       subjects,
-      month,
       studentsList,
+      monthlyList,
+      selectedMonth,
+      selectedMonthData,
+      monthlyStudentFilter: reportsState.monthlyStudentFilter || 'all',
+      studentMap,
+      subjectNames,
       threshold: cache.threshold,
     });
   }
@@ -885,6 +908,22 @@
     if (action === 'import-done') { location.hash = '#/dashboard'; return; }
 
     if (action === 'export') { await exportAttendance(btn.dataset.format); return; }
+    if (action === 'export-monthly') {
+      const mKey = btn.dataset.month;
+      await exportAttendance(btn.dataset.format || 'xlsx', mKey);
+      return;
+    }
+    if (action === 'select-report-month') {
+      reportsState.selectedMonth = btn.dataset.month;
+      reportsState.monthlyStudentFilter = 'all';
+      viewReports();
+      return;
+    }
+    if (action === 'filter-monthly-students') {
+      reportsState.monthlyStudentFilter = btn.dataset.filter || 'all';
+      viewReports();
+      return;
+    }
     if (action === 'backup-export') { await exportBackup(); return; }
     if (action === 'backup-import-trigger') { document.getElementById('backup-file').click(); return; }
 
@@ -978,6 +1017,18 @@
       const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
       const canvas = ImageExport.generateStudentCard(student, stOverall, subjectNames, cache.classInfo, isDark, cache.threshold);
       showImageModal(canvas, `${student.name} — Report Card`, `Attendance_${student.name.replace(/\s+/g, '_')}.png`);
+      return;
+    }
+
+    if (action === 'export-monthly-summary-img') {
+      const mKey = btn.dataset.month;
+      const monthlyList = Calc.allMonthlyStats(cache.attendance, cache.threshold, cache.allocatedPeriods);
+      const monthData = monthlyList.find((m) => m.key === mKey);
+      if (!monthData) { showToast('No month data found to export.', 'error'); return; }
+      const studentMap = Object.fromEntries(cache.students.map((s) => [s.id, s]));
+      const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+      const canvas = ImageExport.generateMonthlyCard(monthData, studentMap, cache.classInfo, isDark, cache.threshold);
+      showImageModal(canvas, `${monthData.label} — Monthly Report Card`, `Monthly_Attendance_${monthData.key}.png`);
       return;
     }
 
@@ -1179,13 +1230,17 @@
     return { success: false };
   }
 
-  async function exportAttendance(format) {
-    const validRows = cache.attendance
-      .filter((a) => a.status === 'P' || a.status === 'A')
-      .sort((a, b) => a.date.localeCompare(b.date) || a.period - b.period);
+  async function exportAttendance(format, monthFilter = null) {
+    let validRows = cache.attendance
+      .filter((a) => a.status === 'P' || a.status === 'A');
+
+    if (monthFilter) {
+      validRows = validRows.filter((a) => a.date.startsWith(monthFilter));
+    }
+    validRows.sort((a, b) => a.date.localeCompare(b.date) || a.period - b.period);
 
     if (validRows.length === 0) {
-      showToast('No attendance records found to export. Mark attendance first.', 'error');
+      showToast(monthFilter ? `No attendance records found for ${monthFilter}.` : 'No attendance records found to export. Mark attendance first.', 'error');
       return;
     }
 
@@ -1199,8 +1254,9 @@
       Status: a.status === 'P' ? 'Present' : 'Absent',
     }));
 
-    const dateStr = todayIso();
-    const filename = `attendance_export_${dateStr}.${format}`;
+    const dateStr = monthFilter ? monthFilter : todayIso();
+    const filename = monthFilter ? `attendance_${monthFilter}.${format}` : `attendance_export_${dateStr}.${format}`;
+    const exportTitle = monthFilter ? `Attendance ${monthFilter} Export` : 'Attendance Export';
 
     if (format === 'csv') {
       const headers = ['Date', 'Period', 'Subject', 'RegisterNo', 'RollNo', 'Name', 'Status'];
@@ -1214,12 +1270,12 @@
         mimeType: 'text/csv',
         textData: csv,
         blobData: blob,
-        title: 'Attendance CSV Export',
+        title: exportTitle,
       });
     } else {
       if (typeof XLSX === 'undefined') {
         showToast('Excel exporter not available. Exporting as CSV instead…', 'info');
-        return exportAttendance('csv');
+        return exportAttendance('csv', monthFilter);
       }
       try {
         const headers = ['Date', 'Period', 'Subject', 'RegisterNo', 'RollNo', 'Name', 'Status'];
@@ -1228,7 +1284,7 @@
           wch: Math.max(h.length, ...rows.map(r => String(r[h] ?? '').length)) + 3
         }));
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
+        XLSX.utils.book_append_sheet(wb, ws, monthFilter ? `Attendance_${monthFilter}` : 'Attendance');
         const base64Data = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
         const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
         const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -1238,7 +1294,7 @@
           mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
           base64Data,
           blobData: blob,
-          title: 'Attendance Excel Export',
+          title: exportTitle,
         });
       } catch (err) {
         console.error('Excel generation error:', err);

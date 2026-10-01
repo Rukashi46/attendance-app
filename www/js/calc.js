@@ -242,6 +242,15 @@ const Calc = (() => {
     return { present: dt.p, absent: dt.a, periods };
   }
 
+  const MONTH_NAMES = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  const MONTH_NAMES_SHORT = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
   function monthly(records, year, month /* 1-12 */) {
     const prefix = `${year}-${String(month).padStart(2, '0')}`;
     const filtered = records.filter((r) => r.date.startsWith(prefix) && (r.status === 'P' || r.status === 'A'));
@@ -250,6 +259,11 @@ const Calc = (() => {
     const subjects = {};
     for (const code of stats.bySubject.keys()) subjects[code] = subjectSummary(stats, code);
     return {
+      key: prefix,
+      year,
+      month,
+      label: `${MONTH_NAMES[month - 1] || month} ${year}`,
+      shortLabel: `${MONTH_NAMES_SHORT[month - 1] || month} ${year}`,
       present: overall.present,
       absent: overall.absent,
       total: overall.total,
@@ -257,6 +271,181 @@ const Calc = (() => {
       subjects,
       workingPeriods: new Set(filtered.map((r) => `${r.date}|${r.period}`)).size,
     };
+  }
+
+  function allMonthlyStats(records, target = 75, allocatedPeriods = {}) {
+    const monthKeys = new Set();
+    for (const r of records) {
+      if ((r.status === 'P' || r.status === 'A') && r.date && r.date.length >= 7) {
+        monthKeys.add(r.date.slice(0, 7));
+      }
+    }
+    const sortedKeys = [...monthKeys].sort((a, b) => b.localeCompare(a)); // latest first
+    return sortedKeys.map((key) => {
+      const [yStr, mStr] = key.split('-');
+      const year = parseInt(yStr, 10);
+      const month = parseInt(mStr, 10);
+      const filtered = records.filter((r) => r.date.startsWith(key) && (r.status === 'P' || r.status === 'A'));
+      const stats = buildStats(filtered);
+      const overall = classOverall(stats);
+      const workingPeriods = new Set(filtered.map((r) => `${r.date}|${r.period}`)).size;
+      const uniqueDates = new Set(filtered.map((r) => r.date)).size;
+
+      // Subject breakdown for this month
+      const subjects = [];
+      for (const code of stats.bySubject.keys()) {
+        const sum = subjectSummary(stats, code, target, allocatedPeriods);
+        subjects.push({
+          code,
+          conducted: sum.conducted,
+          present: sum.present,
+          absent: sum.absent,
+          total: sum.total,
+          pct: sum.pct,
+          above: sum.above,
+          below: sum.below,
+          students: sum.students,
+        });
+      }
+      subjects.sort((a, b) => a.code.localeCompare(b.code));
+
+      // Student breakdown for this month
+      const students = [];
+      let aboveCount = 0;
+      let belowCount = 0;
+      for (const [stId, st] of stats.byStudent.entries()) {
+        const studentPct = pct(st.p, st.a);
+        const m = margin(st.p, st.a, target);
+        if (studentPct !== null) {
+          if (studentPct >= target) aboveCount++;
+          else belowCount++;
+        }
+        students.push({
+          studentId: stId,
+          present: st.p,
+          absent: st.a,
+          total: st.p + st.a,
+          pct: studentPct,
+          margin: m,
+        });
+      }
+      students.sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
+
+      const label = `${MONTH_NAMES[month - 1] || mStr} ${year}`;
+      const shortLabel = `${MONTH_NAMES_SHORT[month - 1] || mStr} ${year}`;
+
+      return {
+        key,
+        year,
+        month,
+        label,
+        shortLabel,
+        workingPeriods,
+        uniqueDates,
+        present: overall.present,
+        absent: overall.absent,
+        total: overall.total,
+        pct: overall.pct,
+        aboveCount,
+        belowCount,
+        subjects,
+        students,
+      };
+    });
+  }
+
+  function studentMonthlyStats(records, studentId, target = 75) {
+    const studentRecords = records.filter(
+      (r) => r.studentId === studentId && (r.status === 'P' || r.status === 'A')
+    );
+    const monthMap = new Map();
+    for (const r of studentRecords) {
+      const key = r.date.slice(0, 7);
+      if (!monthMap.has(key)) monthMap.set(key, { p: 0, a: 0, subjects: new Map() });
+      const mData = monthMap.get(key);
+      if (r.status === 'P') mData.p++;
+      else mData.a++;
+
+      if (!mData.subjects.has(r.subjectCode)) mData.subjects.set(r.subjectCode, { p: 0, a: 0 });
+      const sub = mData.subjects.get(r.subjectCode);
+      if (r.status === 'P') sub.p++;
+      else sub.a++;
+    }
+
+    const sortedKeys = [...monthMap.keys()].sort((a, b) => b.localeCompare(a));
+    return sortedKeys.map((key) => {
+      const [yStr, mStr] = key.split('-');
+      const year = parseInt(yStr, 10);
+      const month = parseInt(mStr, 10);
+      const data = monthMap.get(key);
+      const total = data.p + data.a;
+      const monthlyPct = pct(data.p, data.a);
+      const m = margin(data.p, data.a, target);
+
+      const subjects = [];
+      for (const [code, sv] of data.subjects.entries()) {
+        subjects.push({
+          code,
+          present: sv.p,
+          absent: sv.a,
+          total: sv.p + sv.a,
+          pct: pct(sv.p, sv.a),
+        });
+      }
+      subjects.sort((a, b) => a.code.localeCompare(b.code));
+
+      return {
+        key,
+        year,
+        month,
+        label: `${MONTH_NAMES[month - 1] || mStr} ${year}`,
+        shortLabel: `${MONTH_NAMES_SHORT[month - 1] || mStr} ${year}`,
+        present: data.p,
+        absent: data.a,
+        total,
+        pct: monthlyPct,
+        margin: m,
+        subjects,
+      };
+    });
+  }
+
+  function subjectMonthlyStats(records, subjectCode) {
+    const norm = (s) => (s || '').trim().toUpperCase();
+    const targetNorm = norm(subjectCode);
+    const subRecords = records.filter(
+      (r) => norm(r.subjectCode) === targetNorm && (r.status === 'P' || r.status === 'A')
+    );
+    const monthMap = new Map();
+    for (const r of subRecords) {
+      const key = r.date.slice(0, 7);
+      if (!monthMap.has(key)) monthMap.set(key, { p: 0, a: 0, periods: new Set() });
+      const mData = monthMap.get(key);
+      if (r.status === 'P') mData.p++;
+      else mData.a++;
+      mData.periods.add(`${r.date}|${r.period}`);
+    }
+
+    const sortedKeys = [...monthMap.keys()].sort((a, b) => b.localeCompare(a));
+    return sortedKeys.map((key) => {
+      const [yStr, mStr] = key.split('-');
+      const year = parseInt(yStr, 10);
+      const month = parseInt(mStr, 10);
+      const data = monthMap.get(key);
+      const total = data.p + data.a;
+      return {
+        key,
+        year,
+        month,
+        label: `${MONTH_NAMES[month - 1] || mStr} ${year}`,
+        shortLabel: `${MONTH_NAMES_SHORT[month - 1] || mStr} ${year}`,
+        conducted: data.periods.size,
+        present: data.p,
+        absent: data.a,
+        total,
+        pct: pct(data.p, data.a),
+      };
+    });
   }
 
   return {
@@ -267,6 +456,11 @@ const Calc = (() => {
     lowAttendance,
     dateBreakdown,
     monthly,
+    allMonthlyStats,
+    studentMonthlyStats,
+    subjectMonthlyStats,
+    MONTH_NAMES,
+    MONTH_NAMES_SHORT,
     pct,
     margin,
     semesterMargin,

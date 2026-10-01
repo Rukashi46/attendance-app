@@ -487,6 +487,153 @@ const ImageExport = (() => {
   }
 
   // ------------------------------------------------------------------
+  // 4. Monthly Attendance Report Card Image
+  // ------------------------------------------------------------------
+  function generateMonthlyCard(monthData, studentMap = {}, classInfo = {}, isDark = true, threshold = 75) {
+    const W = 800;
+    const students = monthData.students || [];
+    const rowH = 42;
+    const tableTop = 270;
+    const maxStudents = Math.min(60, students.length);
+    const H = Math.max(540, tableTop + (maxStudents + 2) * rowH + 80);
+
+    const { canvas, ctx } = createHiDPICanvas(W, H);
+
+    const bg = isDark ? '#0c0c14' : '#f8f9fd';
+    const cardBg = isDark ? 'rgba(255,255,255,0.04)' : '#ffffff';
+    const cardBorder = isDark ? 'rgba(255,255,255,0.08)' : '#e2e8f0';
+    const textMain = isDark ? '#f8fafc' : '#0f172a';
+    const textDim = isDark ? '#94a3b8' : '#64748b';
+
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    // Card boundary
+    ctx.fillStyle = cardBg;
+    ctx.strokeStyle = cardBorder;
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, 24, 24, W - 48, H - 48, 20, true, true);
+
+    // Accent line
+    ctx.fillStyle = '#a78bfa';
+    roundRect(ctx, 44, 42, 6, 42, 3, true, false);
+
+    // Header
+    const institution = [classInfo.className, classInfo.department, classInfo.semester ? `Sem ${classInfo.semester}` : '']
+      .filter(Boolean).join(' • ') || 'Monthly Attendance Report';
+    ctx.font = '600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    ctx.fillStyle = '#a78bfa';
+    ctx.fillText(institution.toUpperCase(), 60, 56);
+
+    ctx.font = '700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    ctx.fillStyle = textMain;
+    ctx.fillText(`${monthData.label} Attendance Summary`, 60, 83);
+
+    // Roll & Conducted
+    ctx.font = '500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    ctx.fillStyle = textDim;
+    ctx.fillText(`Conducted: ${monthData.workingPeriods} Periods (${monthData.uniqueDates || 0} Working Days)  •  Minimum Target: ${threshold}%`, 60, 104);
+
+    // Stat Boxes (3 columns)
+    const boxY = 125, boxH = 90, boxW = (W - 48 - 40 - 24) / 3;
+    const statCards = [
+      {
+        label: 'CLASS ATTENDANCE',
+        val: monthData.pct !== null ? `${monthData.pct.toFixed(1)}%` : '—',
+        color: monthData.pct >= threshold ? '#34d399' : (monthData.pct >= threshold - 10 ? '#fbbf24' : '#f87171'),
+      },
+      {
+        label: 'PERIODS ATTENDED / TOTAL',
+        val: `${monthData.present} / ${monthData.total}`,
+        color: textMain,
+      },
+      {
+        label: `DEFAULTERS (<${threshold}%)`,
+        val: `${monthData.belowCount || 0} Students`,
+        color: monthData.belowCount > 0 ? '#f87171' : '#34d399',
+      },
+    ];
+
+    statCards.forEach((sc, i) => {
+      const bx = 44 + i * (boxW + 12);
+      ctx.fillStyle = isDark ? 'rgba(255,255,255,0.03)' : '#f1f5f9';
+      ctx.strokeStyle = cardBorder;
+      roundRect(ctx, bx, boxY, boxW, boxH, 14, true, true);
+
+      ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillStyle = textDim;
+      ctx.fillText(sc.label, bx + 16, boxY + 28);
+
+      ctx.font = '800 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillStyle = sc.color;
+      ctx.fillText(sc.val, bx + 16, boxY + 62);
+    });
+
+    // Table Header
+    const thY = tableTop;
+    ctx.fillStyle = isDark ? 'rgba(255,255,255,0.02)' : '#f8fafc';
+    ctx.fillRect(44, thY, W - 88, 36);
+    ctx.strokeStyle = cardBorder;
+    ctx.beginPath();
+    ctx.moveTo(44, thY + 36); ctx.lineTo(W - 44, thY + 36); ctx.stroke();
+
+    ctx.font = '700 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    ctx.fillStyle = textDim;
+    ctx.fillText('#', 58, thY + 23);
+    ctx.fillText('STUDENT NAME', 90, thY + 23);
+    ctx.fillText('ROLL NO', 360, thY + 23);
+    ctx.fillText('ATTENDED', 480, thY + 23);
+    ctx.fillText('MISSED', 580, thY + 23);
+    ctx.fillText('MONTH %', 680, thY + 23);
+
+    let curY = thY + 36;
+    students.slice(0, maxStudents).forEach((s, idx) => {
+      const st = studentMap[s.studentId] || {};
+      const name = st.name || s.name || s.studentId;
+      const rollNo = st.rollNo || s.rollNo || '—';
+
+      ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.04)' : '#f1f5f9';
+      ctx.beginPath();
+      ctx.moveTo(44, curY + rowH); ctx.lineTo(W - 44, curY + rowH); ctx.stroke();
+
+      ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillStyle = textDim;
+      ctx.fillText(String(idx + 1), 58, curY + 26);
+
+      ctx.font = '700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillStyle = textMain;
+      ctx.fillText(name.length > 28 ? name.slice(0, 26) + '…' : name, 90, curY + 26);
+
+      ctx.font = '500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillStyle = textDim;
+      ctx.fillText(rollNo, 360, curY + 26);
+
+      ctx.font = '600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.fillStyle = '#34d399';
+      ctx.fillText(`${s.present} / ${s.total}`, 480, curY + 26);
+
+      ctx.fillStyle = s.absent > 0 ? '#f87171' : textDim;
+      ctx.fillText(`${s.absent}`, 580, curY + 26);
+
+      const pStr = s.pct !== null ? `${s.pct.toFixed(1)}%` : '—';
+      const pColors = getStatusColors(s.pct, isDark, threshold);
+      drawBadge(ctx, pStr, 675, curY + 25, pColors.bg, pColors.fg, 11);
+
+      curY += rowH;
+    });
+
+    // Footer
+    const footerY = H - 42;
+    ctx.font = '500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    ctx.fillStyle = textDim;
+    const nowStr = new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    ctx.fillText(`CR Attendance App • Generated on ${nowStr}`, 58, footerY);
+    ctx.fillText('Official Monthly Attendance Record', W - 280, footerY);
+
+    return canvas;
+  }
+
+  // ------------------------------------------------------------------
   // Export & Share Helpers
   // ------------------------------------------------------------------
   function canvasToBlob(canvas) {
@@ -606,6 +753,7 @@ const ImageExport = (() => {
     generateStudentCard,
     generateSubjectCard,
     generateDefaultersNotice,
+    generateMonthlyCard,
     downloadCanvas,
     shareCanvas,
     canvasToBlob,
