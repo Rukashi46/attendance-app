@@ -15,7 +15,7 @@
   const studentsState = { query: '', sort: 'name' };
   const markHomeState = { date: todayIso() };
   const calendarState = { date: todayIso() };
-  const reportsState = { selectedMonth: null, monthlyStudentFilter: 'all' };
+  const monthlyState = { selectedMonth: null, monthlyStudentFilter: 'all' };
   let lowAttThreshold = null;
   let markPeriodState = null;
   let markSessionState = null;
@@ -205,6 +205,7 @@
     [/^#\/low-attendance$/, viewLowAttendance],
     [/^#\/calendar\/([^/]+)$/, (m) => viewCalendarDay(m[1])],
     [/^#\/calendar$/, viewCalendarHome],
+    [/^#\/monthly$/, viewMonthlyStats],
     [/^#\/reports$/, viewReports],
     [/^#\/import$/, viewImport],
     [/^#\/backup$/, viewBackup],
@@ -510,27 +511,37 @@
       };
     });
     subjects.sort((a, b) => a.code.localeCompare(b.code));
-    const monthlyList = Calc.allMonthlyStats(cache.attendance, cache.threshold, cache.allocatedPeriods);
-    if (!reportsState.selectedMonth && monthlyList.length > 0) {
-      reportsState.selectedMonth = monthlyList[0].key;
-    }
-    const selectedMonth = reportsState.selectedMonth || (monthlyList[0] ? monthlyList[0].key : 'all');
-    const selectedMonthData = monthlyList.find((m) => m.key === selectedMonth) || null;
 
+    const now = new Date();
+    const currentMonth = Calc.monthly(cache.attendance, now.getFullYear(), now.getMonth() + 1);
     const studentsList = cache.students
       .filter((s) => s.active !== false)
       .sort((a, b) => a.name.localeCompare(b.name));
-    const studentMap = Object.fromEntries(cache.students.map((s) => [s.id, s]));
-    const subjectNames = Object.fromEntries(cache.subjects.map((s) => [s.code, s.name]));
 
     view().innerHTML = Render.reports({
       classPct: overall.pct,
       subjects,
       studentsList,
+      currentMonth,
+      threshold: cache.threshold,
+    });
+  }
+
+  async function viewMonthlyStats() {
+    const monthlyList = Calc.allMonthlyStats(cache.attendance, cache.threshold, cache.allocatedPeriods);
+    if (!monthlyState.selectedMonth && monthlyList.length > 0) {
+      monthlyState.selectedMonth = monthlyList[0].key;
+    }
+    const selectedMonth = monthlyState.selectedMonth || (monthlyList[0] ? monthlyList[0].key : 'all');
+    const selectedMonthData = monthlyList.find((m) => m.key === selectedMonth) || null;
+    const studentMap = Object.fromEntries(cache.students.map((s) => [s.id, s]));
+    const subjectNames = Object.fromEntries(cache.subjects.map((s) => [s.code, s.name]));
+
+    view().innerHTML = Render.monthlyView({
       monthlyList,
       selectedMonth,
       selectedMonthData,
-      monthlyStudentFilter: reportsState.monthlyStudentFilter || 'all',
+      monthlyStudentFilter: monthlyState.monthlyStudentFilter || 'all',
       studentMap,
       subjectNames,
       threshold: cache.threshold,
@@ -913,15 +924,15 @@
       await exportAttendance(btn.dataset.format || 'xlsx', mKey);
       return;
     }
-    if (action === 'select-report-month') {
-      reportsState.selectedMonth = btn.dataset.month;
-      reportsState.monthlyStudentFilter = 'all';
-      viewReports();
+    if (action === 'select-monthly-month' || action === 'select-report-month') {
+      monthlyState.selectedMonth = btn.dataset.month;
+      monthlyState.monthlyStudentFilter = 'all';
+      viewMonthlyStats();
       return;
     }
     if (action === 'filter-monthly-students') {
-      reportsState.monthlyStudentFilter = btn.dataset.filter || 'all';
-      viewReports();
+      monthlyState.monthlyStudentFilter = btn.dataset.filter || 'all';
+      viewMonthlyStats();
       return;
     }
     if (action === 'backup-export') { await exportBackup(); return; }

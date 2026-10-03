@@ -127,7 +127,7 @@ const Render = (() => {
           <div style="text-align:right">
             <div class="stat-label">This Month (${esc(d.currentMonthShort || '')})</div>
             <div class="stat-num" style="font-size:22px;color:${pctColor(d.currentMonthPct, d.threshold)}">${pctStr(d.currentMonthPct)}</div>
-            <a href="#/reports" class="sub" style="text-decoration:none;color:var(--accent2);display:inline-block;margin-top:2px">View Monthly Stats &rarr;</a>
+            <a href="#/monthly" class="sub" style="text-decoration:none;color:var(--accent2);display:inline-block;margin-top:2px">Monthly Stats &rarr;</a>
           </div>` : ''}
         </div>
       </div>
@@ -725,21 +725,60 @@ const Render = (() => {
         </div>
       </div>
 
-      <!-- Monthly Attendance Percentage Statistics -->
-      <div class="section-title">Monthly Attendance Percentage Statistics</div>
+      <!-- Monthly Attendance Summary -->
+      <div class="section-title">Monthly Attendance</div>
+      <div class="card">
+        <div class="row between" style="margin-bottom:8px">
+          <div>
+            <div class="name">Monthly Attendance Statistics</div>
+            <div class="sub">Detailed month-by-month attendance percentage &amp; defaulters</div>
+          </div>
+          <a href="#/monthly" class="btn sm primary" style="text-decoration:none;display:inline-flex;align-items:center;white-space:nowrap">Open Monthly Stats &rarr;</a>
+        </div>
+        ${d.currentMonth ? `
+        <div class="grid-3" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--card-border)">
+          <div>
+            <div class="stat-num" style="font-size:18px;color:${pctColor(d.currentMonth.pct, d.threshold)}">${pctStr(d.currentMonth.pct)}</div>
+            <div class="stat-label">${esc(d.currentMonth.shortLabel || 'This Month')} %</div>
+          </div>
+          <div>
+            <div class="stat-num" style="font-size:18px">${d.currentMonth.workingPeriods || 0}</div>
+            <div class="stat-label">Working Periods</div>
+          </div>
+          <div>
+            <div class="stat-num" style="font-size:18px;color:${(d.currentMonth.belowCount || 0) > 0 ? 'var(--absent)' : 'var(--present)'}">${d.currentMonth.belowCount || 0}</div>
+            <div class="stat-label">Below ${d.threshold}%</div>
+          </div>
+        </div>` : ''}
+      </div>
+
+      <div class="section-title">File Export (Spreadsheets)</div>
+      <div class="card btn-row">
+        <button class="btn block" data-action="export" data-format="csv">Export CSV</button>
+        <button class="btn block" data-action="export" data-format="xlsx">Export Excel</button>
+      </div>
+    </div>`;
+  }
+
+  // ---------------- Monthly Attendance Stats (Dedicated Screen) ----------------
+  function monthlyView(d) {
+    return `
+    ${topbar('Monthly Attendance', { back: true })}
+    <div class="content">
+      <!-- Month Filter Chips -->
       ${d.monthlyList && d.monthlyList.length > 0 ? `
       <div class="tabbar" style="margin-bottom:12px">
-        <span class="chip ${d.selectedMonth === 'all' ? 'active' : ''}" data-action="select-report-month" data-month="all">
+        <span class="chip ${d.selectedMonth === 'all' ? 'active' : ''}" data-action="select-monthly-month" data-month="all">
           All Months Overview (${d.monthlyList.length})
         </span>
         ${d.monthlyList.map(m => `
-        <span class="chip ${d.selectedMonth === m.key ? 'active' : ''}" data-action="select-report-month" data-month="${m.key}">
+        <span class="chip ${d.selectedMonth === m.key ? 'active' : ''}" data-action="select-monthly-month" data-month="${m.key}">
           ${esc(m.shortLabel)} &middot; <b style="color:${d.selectedMonth === m.key ? 'inherit' : pctColor(m.pct, d.threshold)}">${pctStr(m.pct)}</b>
         </span>`).join('')}
       </div>` : ''}
 
       ${(!d.monthlyList || d.monthlyList.length === 0) ? `
-      <div class="card"><div class="empty small">No attendance records found for monthly calculation.</div></div>` :
+      <div class="card"><div class="empty small">No attendance records found for monthly calculation. Mark attendance or import data first.</div></div>` :
       d.selectedMonth === 'all' ? `
       <!-- All Months Comparison Cards -->
       <div style="display:flex;flex-direction:column;gap:12px">
@@ -770,7 +809,7 @@ const Render = (() => {
                 <span style="color:var(--present)">${m.aboveCount} &ge; ${d.threshold}%</span> &middot;
                 <span style="color:${m.belowCount > 0 ? 'var(--absent)' : 'inherit'}">${m.belowCount} &lt; ${d.threshold}%</span>
               </span>
-              <button class="btn sm" data-action="select-report-month" data-month="${m.key}">View Details &rarr;</button>
+              <button class="btn sm" data-action="select-monthly-month" data-month="${m.key}">View Details &rarr;</button>
             </div>
           </div>`;
         }).join('')}
@@ -894,12 +933,6 @@ const Render = (() => {
         `;
       })()}
       `}
-
-      <div class="section-title">File Export (Spreadsheets)</div>
-      <div class="card btn-row">
-        <button class="btn block" data-action="export" data-format="csv">Export CSV</button>
-        <button class="btn block" data-action="export" data-format="xlsx">Export Excel</button>
-      </div>
     </div>`;
   }
 
@@ -981,8 +1014,15 @@ const Render = (() => {
     ${topbar('More')}
     <div class="content">
       <div class="card">
-        <a href="#/calendar" class="list-item" style="text-decoration:none;color:inherit"><div class="name">Calendar</div></a>
+        <a href="#/monthly" class="list-item" style="text-decoration:none;color:inherit">
+          <div style="flex:1">
+            <div class="name">Monthly Attendance Stats</div>
+            <div class="sub">Month-by-month attendance percentage &amp; defaulters</div>
+          </div>
+          <span class="sub" style="font-size:16px">&rarr;</span>
+        </a>
         <a href="#/reports" class="list-item" style="text-decoration:none;color:inherit"><div class="name">Reports</div></a>
+        <a href="#/calendar" class="list-item" style="text-decoration:none;color:inherit"><div class="name">Calendar</div></a>
         <a href="#/low-attendance" class="list-item" style="text-decoration:none;color:inherit"><div class="name">Low attendance</div></a>
         <a href="#/import" class="list-item" style="text-decoration:none;color:inherit"><div class="name">Import / Re-sync Excel</div></a>
         <a href="#/backup" class="list-item" style="text-decoration:none;color:inherit"><div class="name">Backup &amp; restore</div></a>
@@ -1123,7 +1163,7 @@ const Render = (() => {
     markHome, markPeriod, markSession,
     subjectsList, subjectDetail,
     lowAttendance, calendarHome, calendarDay,
-    reports, more, importHome, importPreview, importSuccess, backup, settings,
+    reports, monthlyView, more, importHome, importPreview, importSuccess, backup, settings,
     imagePreviewModal, confirmModal, promptModal, marginBadge,
   };
 })();
