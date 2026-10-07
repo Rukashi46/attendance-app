@@ -101,15 +101,35 @@
     return `${y}-${m}-${day}`;
   }
 
-  function studentById(id) { return cache.students.find((s) => s.id === id); }
-  function subjectByCode(code) { return cache.subjects.find((s) => s.code === code); }
-  function matchSubjectByNormCode(normCode) { return cache.subjects.find((s) => Importer.normCode(s.code) === normCode); }
+  function studentById(id) {
+    if (!id) return null;
+    return Norm.resolveStudent(id, cache.students);
+  }
+  function subjectByCode(code) {
+    if (!code) return null;
+    const can = Norm.resolveSubjectCode(code, cache.subjects, cache.timetable);
+    return cache.subjects.find((s) => s.code === can) ||
+           cache.subjects.find((s) => Norm.isSameSubject(s.code, code, cache.subjects, cache.timetable)) ||
+           { code, name: code };
+  }
+  function matchSubjectByNormCode(normCode) {
+    return subjectByCode(normCode);
+  }
   function nameKeyOf(studentId) {
     const s = studentById(studentId);
-    return s ? (s.nameKey || Importer.nameKey(s.name)) : '';
+    return s ? (s.nameKey || Norm.nameKey(s.name)) : '';
   }
 
+  let _hasMigratedAttendance = false;
   async function loadCache() {
+    if (!_hasMigratedAttendance) {
+      _hasMigratedAttendance = true;
+      try {
+        await Norm.cleanupAndMigrate(DB);
+      } catch (e) {
+        console.warn('Startup attendance migration error:', e);
+      }
+    }
     cache.students = await DB.getAll('students');
     cache.subjects = await DB.getAll('subjects');
     cache.timetable = await DB.getAll('timetable');
@@ -244,16 +264,21 @@
     const todaysTT = cache.timetable.filter((t) => t.day === dayName).sort((a, b) => a.period - b.period);
     const todayClasses = todaysTT.map((t) => {
       const subject = matchSubjectByNormCode(t.code);
-      const recs = cache.attendance.filter((a) => a.date === today && a.period === t.period && Importer.normCode(a.subjectCode) === t.code);
+      const code = subject ? subject.code : t.code;
+      const recs = cache.attendance.filter((a) =>
+        Norm.date(a.date) === today &&
+        Norm.period(a.period) === t.period &&
+        Norm.isSameSubject(a.subjectCode, t.code, cache.subjects, cache.timetable)
+      );
       return {
-        period: t.period, time: t.time, code: subject ? subject.code : t.code,
+        period: t.period, time: t.time, code,
         subjectName: subject ? subject.name : t.subject,
         done: recs.length > 0,
         present: recs.filter((r) => r.status === 'P').length,
         absent: recs.filter((r) => r.status === 'A').length,
       };
     });
-    const todayRecs = cache.attendance.filter((a) => a.date === today);
+    const todayRecs = cache.attendance.filter((a) => Norm.date(a.date) === today);
     const activeStudents = cache.students.filter((s) => s.active !== false);
     const totalStudents = activeStudents.length || cache.students.length;
 
@@ -329,16 +354,17 @@
   async function viewStudentDetail(id) {
     const s = studentById(id);
     if (!s) { location.hash = '#/students'; return; }
-    const stats = Calc.buildStats(cache.attendance);
-    const overall = Calc.studentOverall(stats, id, cache.threshold, cache.allocatedPeriods);
+    const sCanonId = s.id;
+    const overall = Calc.studentOverall(stats, sCanonId, cache.threshold, cache.allocatedPeriods);
     const subjectNames = Object.fromEntries(cache.subjects.map((sub) => [sub.code, sub.name]));
     const byDate = new Map();
-    cache.attendance.filter((a) => a.studentId === id && (a.status === 'P' || a.status === 'A')).forEach((a) => {
-      if (!byDate.has(a.date)) byDate.set(a.date, { date: a.date, present: 0, absent: 0 });
-      byDate.get(a.date)[a.status === 'P' ? 'present' : 'absent']++;
+    cache.attendance.filter((a) => Norm.isSameStudent(a.studentId, s, cache.students) && (a.status === 'P' || a.status === 'A')).forEach((a) => {
+      const d = Norm.date(a.date);
+      if (!byDate.has(d)) byDate.set(d, { date: d, present: 0, absent: 0 });
+      byDate.get(d)[a.status === 'P' ? 'present' : 'absent']++;
     });
     const recentDays = [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
-    const monthlyStats = Calc.studentMonthlyStats(cache.attendance, id, cache.threshold);
+    const monthlyStats = Calc.studentMonthlyStats(cache.attendance, sCanonId, cache.threshold);
     view().innerHTML = Render.studentDetail({
       student: s,
       stats: overall,
@@ -355,14 +381,18 @@
   }
 
   async function viewMarkHome() {
-    const date = markHomeState.date;
+    const date = Norm.date(markHomeState.date);
     const dayName = Render.dayNameOf(date);
     const stats = Calc.buildStats(cache.attendance);
     const tt = cache.timetable.filter((t) => t.day === dayName).sort((a, b) => a.period - b.period);
     const classes = tt.map((t) => {
       const subject = matchSubjectByNormCode(t.code);
       const code = subject ? subject.code : t.code;
-      const recs = cache.attendance.filter((a) => a.date === date && a.period === t.period && Importer.normCode(a.subjectCode) === t.code);
+      const recs = cache.attendance.filter((a) =>
+        Norm.date(a.date) === date &&
+        Norm.period(a.period) === t.period &&
+        Norm.isSameSubject(a.subjectCode, t.code, cache.subjects, cache.timetable)
+      );
       return {
         period: t.period, time: t.time, code,
         subjectName: subject ? subject.name : t.subject,
@@ -375,16 +405,34 @@
   }
 
   async function viewMarkPeriod(date, period, code) {
-    const subject = subjectByCode(code) || { code, name: code };
-    const existing = cache.attendance.filter((a) => a.date === date && a.period === period && a.subjectCode === code);
-    const existingByStudent = new Map(existing.map((r) => [r.studentId, r]));
+    const normDate = Norm.date(date);
+    const normPeriod = Norm.period(period);
+    const canonicalCode = Norm.resolveSubjectCode(code, cache.subjects, cache.timetable) || code;
+    const subject = subjectByCode(canonicalCode) || { code: canonicalCode, name: canonicalCode };
+
+    const existing = cache.attendance.filter((a) =>
+      Norm.date(a.date) === normDate &&
+      Norm.period(a.period) === normPeriod &&
+      Norm.isSameSubject(a.subjectCode, code, cache.subjects, cache.timetable)
+    );
+    const existingByStudent = new Map();
+    for (const r of existing) {
+      existingByStudent.set(Norm.studentId(r.studentId), r);
+    }
     const locked = existing.some((r) => r.locked);
-    const rows = cache.students.filter((s) => s.active !== false).map((s) => ({
-      studentId: s.id, name: s.name,
-      status: existingByStudent.has(s.id) ? existingByStudent.get(s.id).status : null,
-    }));
-    markPeriodState = { date, period, code, locked, rows };
-    view().innerHTML = Render.markPeriod({ date, period, subjectName: subject.name, locked, rows });
+    const rows = cache.students.filter((s) => s.active !== false).map((s) => {
+      const rec = existingByStudent.get(Norm.studentId(s.id)) ||
+                  existing.find((r) => Norm.isSameStudent(r.studentId, s, cache.students));
+      return {
+        studentId: s.id,
+        name: s.name,
+        rollNo: s.rollNo || '',
+        regNo: s.regNo || '',
+        status: rec ? rec.status : null,
+      };
+    });
+    markPeriodState = { date: normDate, period: normPeriod, code: canonicalCode, locked, rows };
+    view().innerHTML = Render.markPeriod({ date: normDate, period: normPeriod, subjectName: subject.name, locked, rows });
   }
 
   function rerenderMarkPeriod() {
@@ -394,7 +442,8 @@
   }
 
   async function viewMarkSession(date, session) {
-    const dayName = Render.dayNameOf(date);
+    const normDate = Norm.date(date);
+    const dayName = Render.dayNameOf(normDate);
     const isMorning = session === 'morning';
     const tt = cache.timetable.filter((t) => t.day === dayName).sort((a, b) => a.period - b.period);
     const sessionTT = tt.filter((t) => isMorning ? t.period <= 4 : t.period > 4);
@@ -417,10 +466,13 @@
 
     const activeStudents = cache.students.filter((s) => s.active !== false);
     const sessionPeriods = new Set(classes.map((c) => c.period));
-    const existingRecs = cache.attendance.filter((a) => a.date === date && sessionPeriods.has(a.period));
+    const existingRecs = cache.attendance.filter((a) =>
+      Norm.date(a.date) === normDate &&
+      sessionPeriods.has(Norm.period(a.period))
+    );
 
     const rows = activeStudents.map((s) => {
-      const stRecs = existingRecs.filter((r) => r.studentId === s.id);
+      const stRecs = existingRecs.filter((r) => Norm.isSameStudent(r.studentId, s, cache.students));
       let status = 'P';
       if (stRecs.length > 0) {
         const aCount = stRecs.filter((r) => r.status === 'A').length;
@@ -436,8 +488,8 @@
       };
     });
 
-    markSessionState = { date, session, classes, rows };
-    view().innerHTML = Render.markSession({ date, session, classes, rows, dayName });
+    markSessionState = { date: normDate, session, classes, rows };
+    view().innerHTML = Render.markSession({ date: normDate, session, classes, rows, dayName });
   }
 
   function rerenderMarkSession() {
@@ -557,9 +609,53 @@
   // Actions
   // ------------------------------------------------------------------
   async function saveAttendanceRow(studentId, date, period, subjectCode, status, locked) {
-    const nk = nameKeyOf(studentId);
-    const key = `${nk}|${date}|${period}`;
-    await DB.put('attendance', { key, studentId, date, period, subjectCode, status, source: 'manual', locked: !!locked, note: '', importedAt: new Date().toISOString() });
+    const s = Norm.resolveStudent(studentId, cache.students) || { id: studentId };
+    const normDate = Norm.date(date);
+    const normPeriod = Norm.period(period);
+    const normSubj = Norm.resolveSubjectCode(subjectCode, cache.subjects, cache.timetable);
+    const key = Norm.makeKey(s.id, normDate, normPeriod, normSubj);
+
+    // Find existing record by canonical key or by student+date+period+subject matching
+    const existing = cache.attendance.find((a) =>
+      a.key === key ||
+      (Norm.isSameStudent(a.studentId, s, cache.students) &&
+       Norm.date(a.date) === normDate &&
+       Norm.period(a.period) === normPeriod &&
+       Norm.isSameSubject(a.subjectCode, normSubj, cache.subjects, cache.timetable))
+    );
+
+    const nowIso = new Date().toISOString();
+    const record = {
+      key,
+      studentId: s.id,
+      date: normDate,
+      period: normPeriod,
+      subjectCode: normSubj,
+      status,
+      source: 'manual',
+      locked: locked !== undefined ? !!locked : (existing ? !!existing.locked : false),
+      note: existing ? (existing.note || '') : '',
+      importedAt: existing ? (existing.importedAt || nowIso) : nowIso,
+      updatedAt: nowIso,
+    };
+
+    // Purge old key if it differed from canonical key
+    if (existing && existing.key && existing.key !== key) {
+      await DB.del('attendance', existing.key);
+    }
+    // Delete any other duplicate matching records
+    const otherDups = cache.attendance.filter((a) =>
+      a.key !== key &&
+      Norm.isSameStudent(a.studentId, s, cache.students) &&
+      Norm.date(a.date) === normDate &&
+      Norm.period(a.period) === normPeriod &&
+      Norm.isSameSubject(a.subjectCode, normSubj, cache.subjects, cache.timetable)
+    );
+    for (const d of otherDups) {
+      await DB.del('attendance', d.key);
+    }
+
+    await DB.put('attendance', record);
     if (window.SyncEngine) SyncEngine.autoSync();
   }
 
@@ -703,26 +799,50 @@
     if (action === 'save-session') {
       const { date, session, classes, rows } = markSessionState;
       const records = [];
+      const oldKeysToDelete = [];
       const nowIso = new Date().toISOString();
+      const normDate = Norm.date(date);
+
       for (const c of classes) {
+        const canonicalSubj = Norm.resolveSubjectCode(c.code, cache.subjects, cache.timetable) || c.code;
+        const normPeriod = Norm.period(c.period);
+
         for (const r of rows) {
           if (r.status === 'P' || r.status === 'A') {
-            const nk = nameKeyOf(r.studentId);
-            const key = `${nk}|${date}|${c.period}`;
+            const s = Norm.resolveStudent(r.studentId, cache.students) || { id: r.studentId };
+            const key = Norm.makeKey(s.id, normDate, normPeriod, canonicalSubj);
+
+            const existing = cache.attendance.find((a) =>
+              a.key === key ||
+              (Norm.isSameStudent(a.studentId, s, cache.students) &&
+               Norm.date(a.date) === normDate &&
+               Norm.period(a.period) === normPeriod &&
+               Norm.isSameSubject(a.subjectCode, canonicalSubj, cache.subjects, cache.timetable))
+            );
+
+            if (existing && existing.key && existing.key !== key) {
+              oldKeysToDelete.push(existing.key);
+            }
+
             records.push({
               key,
-              studentId: r.studentId,
-              date,
-              period: c.period,
-              subjectCode: c.code,
+              studentId: s.id,
+              date: normDate,
+              period: normPeriod,
+              subjectCode: canonicalSubj,
               status: r.status,
               source: 'manual',
-              locked: false,
-              note: '',
-              importedAt: nowIso,
+              locked: existing ? !!existing.locked : false,
+              note: existing ? (existing.note || '') : '',
+              importedAt: existing ? (existing.importedAt || nowIso) : nowIso,
+              updatedAt: nowIso,
             });
           }
         }
+      }
+
+      for (const ok of oldKeysToDelete) {
+        await DB.del('attendance', ok);
       }
       await DB.putMany('attendance', records);
       if (window.SyncEngine) SyncEngine.autoSync();
@@ -732,7 +852,8 @@
       return;
     }
     if (action === 'quick-mark-session-present') {
-      const date = btn.dataset.date;
+      const rawDate = btn.dataset.date;
+      const date = Norm.date(rawDate);
       const session = btn.dataset.session;
       const dayName = Render.dayNameOf(date);
       const tt = cache.timetable.filter((t) => t.day === dayName).sort((a, b) => a.period - b.period);
@@ -744,26 +865,41 @@
       }
       const activeStudents = cache.students.filter((s) => s.active !== false);
       const records = [];
+      const oldKeysToDelete = [];
       const nowIso = new Date().toISOString();
       for (const t of sessionTT) {
-        const subject = matchSubjectByNormCode(t.code);
-        const code = subject ? subject.code : t.code;
+        const canonicalCode = Norm.resolveSubjectCode(t.code, cache.subjects, cache.timetable) || t.code;
+        const normPeriod = Norm.period(t.period);
+
         for (const s of activeStudents) {
-          const nk = nameKeyOf(s.id);
-          const key = `${nk}|${date}|${t.period}`;
+          const key = Norm.makeKey(s.id, date, normPeriod, canonicalCode);
+          const existing = cache.attendance.find((a) =>
+            a.key === key ||
+            (Norm.isSameStudent(a.studentId, s, cache.students) &&
+             Norm.date(a.date) === date &&
+             Norm.period(a.period) === normPeriod &&
+             Norm.isSameSubject(a.subjectCode, canonicalCode, cache.subjects, cache.timetable))
+          );
+          if (existing && existing.key && existing.key !== key) {
+            oldKeysToDelete.push(existing.key);
+          }
           records.push({
             key,
             studentId: s.id,
             date,
-            period: t.period,
-            subjectCode: code,
+            period: normPeriod,
+            subjectCode: canonicalCode,
             status: 'P',
             source: 'manual',
-            locked: false,
-            note: '',
-            importedAt: nowIso,
+            locked: existing ? !!existing.locked : false,
+            note: existing ? (existing.note || '') : '',
+            importedAt: existing ? (existing.importedAt || nowIso) : nowIso,
+            updatedAt: nowIso,
           });
         }
+      }
+      for (const ok of oldKeysToDelete) {
+        await DB.del('attendance', ok);
       }
       await DB.putMany('attendance', records);
       if (window.SyncEngine) SyncEngine.autoSync();

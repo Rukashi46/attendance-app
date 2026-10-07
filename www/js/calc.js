@@ -78,40 +78,69 @@ const Calc = (() => {
     };
   }
 
+  // Defensively deduplicate records by Student + Date + Period + Subject.
+  // Ensures that duplicate database rows NEVER inflate Total Held, Present, or Absent.
+  function deduplicateRecords(records) {
+    if (!records || records.length === 0) return [];
+    const map = new Map();
+    for (const r of records) {
+      if (!r || (r.status !== 'P' && r.status !== 'A')) continue;
+      const key = (typeof Norm !== 'undefined' && Norm.makeKey)
+        ? Norm.makeKey(r.studentId, r.date, r.period, r.subjectCode)
+        : `${(r.studentId || '').toLowerCase()}|${r.date}|${r.period}|${(r.subjectCode || '').toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
+
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, r);
+      } else {
+        const winner = (typeof Norm !== 'undefined' && Norm.resolveWinningRecord)
+          ? Norm.resolveWinningRecord([existing, r])
+          : ((r.locked && !existing.locked) ? r : (r.source === 'manual' && existing.source !== 'manual') ? r : existing);
+        map.set(key, winner);
+      }
+    }
+    return [...map.values()];
+  }
+
   // Build a full stats object from the raw attendance record list.
   // records: [{studentId, date, period, subjectCode, status}]
   function buildStats(records) {
+    const deduped = deduplicateRecords(records);
     const byStudent = new Map(); // studentId -> { subjects: Map(code -> {p,a}), p, a }
     const bySubject = new Map(); // code -> { p, a, byStudent: Map(id -> {p,a}), periods: Set(date|period) }
     const byDate = new Map();    // date -> { p, a, periods: Map(period -> {p,a,subjectCode}) }
     const conductedBySubject = new Map(); // code -> Set(date|period)
 
-    for (const r of records) {
+    for (const r of deduped) {
       if (r.status !== 'P' && r.status !== 'A') continue;
       const inc = r.status === 'P' ? 'p' : 'a';
 
-      if (!byStudent.has(r.studentId)) byStudent.set(r.studentId, { p: 0, a: 0, subjects: new Map() });
-      const st = byStudent.get(r.studentId);
-      st[inc]++;
-      if (!st.subjects.has(r.subjectCode)) st.subjects.set(r.subjectCode, { p: 0, a: 0 });
-      st.subjects.get(r.subjectCode)[inc]++;
+      // Normalize studentId and subjectCode for uniform grouping
+      const sId = (typeof Norm !== 'undefined' && Norm.studentId) ? Norm.studentId(r.studentId) : r.studentId;
+      const subCode = (typeof Norm !== 'undefined' && Norm.subjectCode) ? Norm.subjectCode(r.subjectCode) : r.subjectCode;
 
-      if (!bySubject.has(r.subjectCode)) {
-        bySubject.set(r.subjectCode, { p: 0, a: 0, byStudent: new Map(), periods: new Set() });
+      if (!byStudent.has(sId)) byStudent.set(sId, { p: 0, a: 0, subjects: new Map() });
+      const st = byStudent.get(sId);
+      st[inc]++;
+      if (!st.subjects.has(subCode)) st.subjects.set(subCode, { p: 0, a: 0 });
+      st.subjects.get(subCode)[inc]++;
+
+      if (!bySubject.has(subCode)) {
+        bySubject.set(subCode, { p: 0, a: 0, byStudent: new Map(), periods: new Set() });
       }
-      const su = bySubject.get(r.subjectCode);
+      const su = bySubject.get(subCode);
       su[inc]++;
-      if (!su.byStudent.has(r.studentId)) su.byStudent.set(r.studentId, { p: 0, a: 0 });
-      su.byStudent.get(r.studentId)[inc]++;
+      if (!su.byStudent.has(sId)) su.byStudent.set(sId, { p: 0, a: 0 });
+      su.byStudent.get(sId)[inc]++;
       su.periods.add(`${r.date}|${r.period}`);
 
-      if (!conductedBySubject.has(r.subjectCode)) conductedBySubject.set(r.subjectCode, new Set());
-      conductedBySubject.get(r.subjectCode).add(`${r.date}|${r.period}`);
+      if (!conductedBySubject.has(subCode)) conductedBySubject.set(subCode, new Set());
+      conductedBySubject.get(subCode).add(`${r.date}|${r.period}`);
 
       if (!byDate.has(r.date)) byDate.set(r.date, { p: 0, a: 0, periods: new Map() });
       const dt = byDate.get(r.date);
       dt[inc]++;
-      if (!dt.periods.has(r.period)) dt.periods.set(r.period, { p: 0, a: 0, subjectCode: r.subjectCode });
+      if (!dt.periods.has(r.period)) dt.periods.set(r.period, { p: 0, a: 0, subjectCode: subCode });
       dt.periods.get(r.period)[inc]++;
     }
 
@@ -464,5 +493,6 @@ const Calc = (() => {
     pct,
     margin,
     semesterMargin,
+    deduplicateRecords,
   };
 })();

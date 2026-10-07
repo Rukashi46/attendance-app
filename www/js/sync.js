@@ -218,23 +218,47 @@ const SyncEngine = (() => {
       }
     }
 
-    // Attendance — merge by key; prefer newer updates
+    // Attendance — merge canonically; prefer newer updates
     if (Array.isArray(remote.attendance)) {
       const local = await DB.getAll('attendance');
-      const localMap = new Map(local.map(a => [a.key, a]));
+      const localMap = new Map();
+      for (const l of local) {
+        if (l.key) localMap.set(l.key, l);
+        const cKey = (typeof Norm !== 'undefined') ? Norm.makeKey(l.studentId, l.date, l.period, l.subjectCode) : l.key;
+        localMap.set(cKey, l);
+      }
       for (const a of remote.attendance) {
-        const existing = localMap.get(a.key);
+        const cKey = (typeof Norm !== 'undefined')
+          ? Norm.makeKey(a.studentId, a.date, a.period, a.subjectCode)
+          : a.key;
+        const canonRec = (typeof Norm !== 'undefined') ? {
+          ...a,
+          key: cKey,
+          studentId: Norm.studentId(a.studentId),
+          date: Norm.date(a.date),
+          period: Norm.period(a.period),
+          subjectCode: Norm.subjectCode(a.subjectCode),
+        } : a;
+        const existing = localMap.get(cKey) || (a.key ? localMap.get(a.key) : null);
         if (!existing) {
-          await DB.put('attendance', a);
+          await DB.put('attendance', canonRec);
+          localMap.set(cKey, canonRec);
           newCount++;
         } else {
-          const remoteTime = a.importedAt || '0';
-          const localTime = existing.importedAt || '0';
-          if (a.status !== existing.status && remoteTime >= localTime) {
-            await DB.put('attendance', { ...existing, ...a });
+          const remoteTime = a.updatedAt || a.importedAt || '0';
+          const localTime = existing.updatedAt || existing.importedAt || '0';
+          if ((a.locked && !existing.locked) || (canonRec.status !== existing.status && remoteTime >= localTime)) {
+            if (existing.key && existing.key !== cKey) {
+              await DB.del('attendance', existing.key);
+            }
+            await DB.put('attendance', { ...existing, ...canonRec });
+            localMap.set(cKey, { ...existing, ...canonRec });
             newCount++;
           }
         }
+      }
+      if (typeof Norm !== 'undefined') {
+        await Norm.cleanupAndMigrate(DB);
       }
     }
 

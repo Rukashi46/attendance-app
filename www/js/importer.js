@@ -214,48 +214,126 @@ const Importer = (() => {
 
   // ---- Merge plan against existing DB -----------------------------------
   async function buildImportPlan(analysis) {
-    const existingAttendance = await DB.getAll('attendance');
-    const existingByKey = new Map(existingAttendance.map((a) => [a.key, a]));
+    const [existingAttendance, existingStudents, existingSubjects, existingTimetable] = await Promise.all([
+      DB.getAll('attendance'),
+      DB.getAll('students'),
+      DB.getAll('subjects'),
+      DB.getAll('timetable'),
+    ]);
 
-    const allNameKeys = new Set();
-    const studentMeta = new Map(); // nameKey -> {displayName, rollNo}
+    const timetableEntries = (analysis.timetable && analysis.timetable.entries.length > 0)
+      ? analysis.timetable.entries
+      : existingTimetable;
+
+    // Resolve each sheet name to canonical subject code
+    const canonicalSubjBySheet = new Map();
+    const uniqueCanonicalSubjects = new Set();
+    for (const sheet of analysis.subjectSheets) {
+      const canonicalCode = Norm.resolveSubjectCode(sheet.code, existingSubjects, timetableEntries);
+      canonicalSubjBySheet.set(sheet.code, canonicalCode);
+      uniqueCanonicalSubjects.add(canonicalCode);
+    }
+
+    // Match or create canonical student records
+    const studentRegistry = [...existingStudents];
+    const studentInfoByRef = new Map();
+
+    for (const sheet of analysis.subjectSheets) {
+      for (const stu of sheet.students) {
+        const existing = Norm.resolveStudent(stu, studentRegistry);
+        if (existing) {
+          studentInfoByRef.set(Norm.nameKey(stu.name), existing);
+          if (stu.rollNo && !existing.rollNo) existing.rollNo = String(stu.rollNo);
+        } else {
+          // Check if already created during this import pass
+          let batchCreated = studentRegistry.find(s => Norm.isSameStudent(s, stu, studentRegistry));
+          if (!batchCreated) {
+            const rollClean = Norm.rollNo(stu.rollNo);
+            const stableId = 'stu_' + (rollClean ? rollClean : Norm.studentName(stu.name).replace(/[^A-Z0-9]/g, '_').toLowerCase());
+            batchCreated = {
+              id: stableId,
+              nameKey: Norm.nameKey(stu.name),
+              name: stu.name,
+              regNo: '',
+              rollNo: stu.rollNo !== undefined ? String(stu.rollNo) : '',
+              active: true,
+            };
+            studentRegistry.push(batchCreated);
+          }
+          studentInfoByRef.set(Norm.nameKey(stu.name), batchCreated);
+        }
+      }
+    }
+
+    // Index existing attendance records by canonical key AND legacy keys
+    const existingMap = new Map();
+    for (const a of existingAttendance) {
+      if (!a) continue;
+      const matchedSt = Norm.resolveStudent(a.studentId, studentRegistry);
+      const sId = matchedSt ? matchedSt.id : Norm.studentId(a.studentId);
+      const d = Norm.date(a.date);
+      const p = Norm.period(a.period);
+      const sub = Norm.resolveSubjectCode(a.subjectCode, existingSubjects, timetableEntries);
+      const cKey = Norm.makeKey(sId, d, p, sub);
+
+      if (a.key) existingMap.set(a.key, a);
+      existingMap.set(cKey, a);
+    }
+
     let totalRecords = 0;
     const uniqueDates = new Set();
-    const uniqueSubjects = new Set();
-
     const plan = { toInsert: [], toAutoUpdate: [], conflicts: [], duplicates: 0 };
 
     for (const sheet of analysis.subjectSheets) {
-      uniqueSubjects.add(sheet.code);
-      for (const d of sheet.dates) uniqueDates.add(d);
       for (const rec of sheet.records) {
         totalRecords++;
-        allNameKeys.add(rec.nameKey);
-        if (!studentMeta.has(rec.nameKey) || sheet.students.some((s) => nameKey(s.name) === rec.nameKey)) {
-          studentMeta.set(rec.nameKey, { displayName: rec.displayName, rollNo: rec.rollNo });
-        }
-        const key = `${rec.nameKey}|${rec.date}|${rec.period}`;
-        const existing = existingByKey.get(key);
+        const stObj = studentInfoByRef.get(rec.nameKey) || Norm.resolveStudent(rec, studentRegistry);
+        const canonStudentId = stObj ? stObj.id : Norm.studentId(rec.displayName);
+        const canonDate = Norm.date(rec.date);
+        const canonPeriod = Norm.period(rec.period);
+        uniqueDates.add(canonDate);
+
+        // Resolve canonical subject code for this specific record
+        const rawSubj = rec.subjectCode || sheet.code;
+        const canonicalSubj = Norm.resolveSubjectCode(rawSubj, existingSubjects, timetableEntries);
+        uniqueCanonicalSubjects.add(canonicalSubj);
+
+        const canonKey = Norm.makeKey(canonStudentId, canonDate, canonPeriod, canonicalSubj);
+        const existing = existingMap.get(canonKey);
+
+        const incomingItem = {
+          key: canonKey,
+          studentId: canonStudentId,
+          date: canonDate,
+          period: canonPeriod,
+          subjectCode: canonicalSubj,
+          status: rec.status,
+          displayName: rec.displayName,
+          rollNo: rec.rollNo,
+        };
+
         if (!existing) {
-          plan.toInsert.push({ key, ...rec });
+          plan.toInsert.push(incomingItem);
+          existingMap.set(canonKey, incomingItem); // prevent duplicate in same batch
         } else if (existing.status === rec.status) {
           plan.duplicates++;
         } else if (existing.source === 'manual' && existing.locked) {
-          plan.conflicts.push({ key, existing, incoming: rec });
+          plan.conflicts.push({ key: canonKey, existing, incoming: incomingItem });
         } else if (existing.source === 'manual') {
-          plan.conflicts.push({ key, existing, incoming: rec });
+          plan.conflicts.push({ key: canonKey, existing, incoming: incomingItem });
         } else {
-          plan.toAutoUpdate.push({ key, ...rec });
+          plan.toAutoUpdate.push({ ...incomingItem, existingKey: existing.key });
+          existingMap.set(canonKey, incomingItem);
         }
       }
     }
 
     return {
       plan,
-      studentsDetected: allNameKeys.size,
-      studentMeta,
-      subjectsDetected: uniqueSubjects.size,
-      subjectCodes: [...uniqueSubjects],
+      studentsDetected: studentRegistry.length,
+      studentRegistry,
+      subjectsDetected: uniqueCanonicalSubjects.size,
+      subjectCodes: [...uniqueCanonicalSubjects],
       datesDetected: uniqueDates.size,
       recordsDetected: totalRecords,
       existingMatched: totalRecords - plan.toInsert.length,
@@ -264,61 +342,46 @@ const Importer = (() => {
       duplicatesPrevented: plan.duplicates,
       potentialConflicts: plan.conflicts.length,
       unrecognized: analysis.unrecognized,
-      timetableFound: analysis.timetable.entries.length > 0,
+      timetableFound: (analysis.timetable && analysis.timetable.entries.length > 0),
     };
   }
 
   async function commitImport(analysis, importPlanResult, conflictResolutions = {}) {
-    const { plan, studentMeta, subjectCodes } = importPlanResult;
+    const { plan, studentRegistry, subjectCodes } = importPlanResult;
     const now = new Date().toISOString();
 
-    // Students: upsert registry, preserving existing regNo/id if present.
-    const existingStudents = await DB.getAll('students');
-    const byName = new Map(existingStudents.map((s) => [s.nameKey, s]));
-    const studentRecords = [];
-    for (const [key, meta] of studentMeta.entries()) {
-      const existing = byName.get(key);
-      if (existing) {
-        studentRecords.push({ ...existing, rollNo: existing.rollNo || meta.rollNo });
-      } else {
-        studentRecords.push({
-          id: 'stu_' + key.replace(/[^A-Z0-9]/g, '_').toLowerCase(),
-          nameKey: key,
-          name: meta.displayName,
-          regNo: '',
-          rollNo: meta.rollNo || '',
-          active: true,
-        });
-      }
+    // 1. Students: upsert student registry
+    if (studentRegistry && studentRegistry.length > 0) {
+      await DB.putMany('students', studentRegistry);
     }
-    await DB.putMany('students', studentRecords);
-    const idByNameKey = new Map(studentRecords.map((s) => [s.nameKey, s.id]));
 
-    // Subjects registry
+    // 2. Subjects registry
     const existingSubjects = await DB.getAll('subjects');
     const subjByCode = new Map(existingSubjects.map((s) => [s.code, s]));
     const timetableByCode = new Map();
-    for (const e of analysis.timetable.entries) {
-      timetableByCode.set(normCode(e.code), e.subject);
+    if (analysis.timetable && analysis.timetable.entries) {
+      for (const e of analysis.timetable.entries) {
+        timetableByCode.set(Norm.subjectCode(e.code), e.subject);
+      }
     }
     const subjRecords = subjectCodes.map((code) => {
       const existing = subjByCode.get(code);
-      const fullName = (existing && existing.name) || timetableByCode.get(normCode(code)) || code;
+      const fullName = (existing && existing.name) || timetableByCode.get(Norm.subjectCode(code)) || code;
       return { code, name: fullName };
     });
     await DB.putMany('subjects', subjRecords);
 
-    // Timetable
-    if (analysis.timetable.entries.length) {
+    // 3. Timetable
+    if (analysis.timetable && analysis.timetable.entries.length) {
       await DB.clearStore('timetable');
       await DB.putMany('timetable', analysis.timetable.entries.map((e) => ({ ...e })));
     }
 
-    // Attendance: inserts + auto-updates + resolved conflicts
+    // 4. Attendance: canonical writes
     const toWrite = [];
     const finalize = (rec) => ({
       key: rec.key,
-      studentId: idByNameKey.get(rec.nameKey),
+      studentId: rec.studentId,
       date: rec.date,
       period: rec.period,
       subjectCode: rec.subjectCode,
@@ -327,30 +390,58 @@ const Importer = (() => {
       locked: false,
       note: '',
       importedAt: now,
+      updatedAt: now,
     });
+
     plan.toInsert.forEach((r) => toWrite.push(finalize(r)));
-    plan.toAutoUpdate.forEach((r) => toWrite.push(finalize(r)));
+    for (const r of plan.toAutoUpdate) {
+      toWrite.push(finalize(r));
+      if (r.existingKey && r.existingKey !== r.key) {
+        await DB.del('attendance', r.existingKey);
+      }
+    }
 
     let resolvedCount = 0;
     for (const c of plan.conflicts) {
       const resolution = conflictResolutions[c.key]; // 'keep' | 'use-new'
       if (resolution === 'use-new') {
-        toWrite.push(finalize({ ...c.incoming, key: c.key }));
+        toWrite.push(finalize(c.incoming));
+        if (c.existing && c.existing.key && c.existing.key !== c.key) {
+          await DB.del('attendance', c.existing.key);
+        }
         resolvedCount++;
       }
-      // 'keep' or undefined -> leave existing record untouched
     }
 
-    await DB.putMany('attendance', toWrite);
+    if (toWrite.length > 0) {
+      await DB.putMany('attendance', toWrite);
+    }
+
+    // 5. Automatic cleanup & deduplication pass
+    const cleanupResult = await Norm.cleanupAndMigrate(DB);
+
     await DB.setMeta('lastImport', {
       at: now,
       inserted: plan.toInsert.length,
       updated: plan.toAutoUpdate.length,
+      duplicates: plan.duplicates,
       conflictsResolved: resolvedCount,
       conflictsRemaining: plan.conflicts.length - resolvedCount,
     });
 
-    return { written: toWrite.length, conflictsRemaining: plan.conflicts.length - resolvedCount };
+    return {
+      studentsDetected: importPlanResult.studentsDetected,
+      subjectsDetected: importPlanResult.subjectsDetected,
+      datesDetected: importPlanResult.datesDetected,
+      recordsDetected: importPlanResult.recordsDetected,
+      newRecords: plan.toInsert.length,
+      updatedRecords: plan.toAutoUpdate.length,
+      duplicatesPrevented: plan.duplicates,
+      conflictsResolved: resolvedCount,
+      conflictsRemaining: plan.conflicts.length - resolvedCount,
+      written: toWrite.length,
+      cleanedDuplicates: cleanupResult.duplicatesRemoved || 0,
+    };
   }
 
   async function readWorkbookFromFile(file) {

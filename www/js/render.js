@@ -999,12 +999,21 @@ const Render = (() => {
   function importSuccess(r) {
     return `
     <div class="card">
-      <div class="row" style="gap:8px;margin-bottom:8px">
-        <span class="badge present">✓ Import complete</span>
+      <div class="row" style="gap:8px;margin-bottom:12px">
+        <span class="badge present">✓ Import Complete &amp; Verified</span>
       </div>
-      <div class="row between small" style="margin-bottom:4px"><span>Records written</span><b style="color:var(--present)">${r.written}</b></div>
-      ${r.conflictsRemaining ? `<div class="row between small" style="margin-bottom:4px"><span>Unresolved conflicts (manual edits kept)</span><b style="color:var(--warn)">${r.conflictsRemaining}</b></div>` : ''}
-      <button class="btn primary block" style="margin-top:12px" data-action="import-done">Done</button>
+      <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
+        <div class="row between"><span>Students:</span><b>${r.studentsDetected ?? '—'}</b></div>
+        <div class="row between"><span>Subjects:</span><b>${r.subjectsDetected ?? '—'}</b></div>
+        <div class="row between"><span>Dates:</span><b>${r.datesDetected ?? '—'}</b></div>
+        <div class="row between" style="padding-top:6px;border-top:1px solid var(--card-border)"><span>Total Rows Processed:</span><b>${r.recordsDetected ?? r.written ?? 0}</b></div>
+        <div class="row between"><span>New Attendance Created:</span><b style="color:var(--present)">+${r.newRecords ?? 0}</b></div>
+        <div class="row between"><span>Attendance Records Updated:</span><b style="color:var(--accent2)">${r.updatedRecords ?? 0}</b></div>
+        <div class="row between"><span>Already Existing / Duplicates Skipped:</span><b>${r.duplicatesPrevented ?? 0}</b></div>
+        ${r.cleanedDuplicates ? `<div class="row between"><span>Legacy Duplicates Cleaned:</span><b style="color:var(--present)">${r.cleanedDuplicates}</b></div>` : ''}
+        ${r.conflictsRemaining ? `<div class="row between"><span>Conflicts Kept (Manual):</span><b style="color:var(--warn)">${r.conflictsRemaining}</b></div>` : ''}
+      </div>
+      <button class="btn primary block" style="margin-top:14px" data-action="import-done">Done &rarr;</button>
     </div>`;
   }
 
