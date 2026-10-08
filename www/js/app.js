@@ -1172,7 +1172,9 @@ This cannot be undone.`,
       if (!importState) return;
       const skipHolidaysInput = document.getElementById('import-skip-holidays');
       const skipHolidays = skipHolidaysInput ? skipHolidaysInput.checked : true;
-      const result = await Importer.commitImport(importState.analysis, importState.planResult, {}, { skipHolidays });
+      const addLeavesInput = document.getElementById('import-add-detected-leaves');
+      const addDetectedLeaves = addLeavesInput ? addLeavesInput.checked : true;
+      const result = await Importer.commitImport(importState.analysis, importState.planResult, {}, { skipHolidays, addDetectedLeaves });
       await loadCache();
       if (window.SyncEngine) SyncEngine.autoSync();
       const resultBox = document.getElementById('import-result');

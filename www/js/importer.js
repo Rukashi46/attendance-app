@@ -34,10 +34,32 @@ const Importer = (() => {
     return normName(s).toUpperCase();
   }
 
+  function isCellMerged(ws, r, c) {
+    if (!ws || !ws['!merges']) return null;
+    const r0 = r - 1, c0 = c - 1;
+    for (const m of ws['!merges']) {
+      if (r0 >= m.s.r && r0 <= m.e.r && c0 >= m.s.c && c0 <= m.e.c) {
+        return m;
+      }
+    }
+    return null;
+  }
+
   function cell(ws, r, c) {
     const addr = XLSX.utils.encode_cell({ r: r - 1, c: c - 1 });
     const cellObj = ws[addr];
-    return cellObj ? cellObj.v : undefined;
+    if (cellObj !== undefined && cellObj.v !== undefined) return cellObj.v;
+    if (ws && ws['!merges']) {
+      const r0 = r - 1, c0 = c - 1;
+      for (const m of ws['!merges']) {
+        if (r0 >= m.s.r && r0 <= m.e.r && c0 >= m.s.c && c0 <= m.e.c) {
+          const originAddr = XLSX.utils.encode_cell({ r: m.s.r, c: m.s.c });
+          const originObj = ws[originAddr];
+          return originObj ? originObj.v : undefined;
+        }
+      }
+    }
+    return undefined;
   }
 
   function sheetRange(ws) {
@@ -49,6 +71,23 @@ const Importer = (() => {
 
   function isDate(v) {
     return v instanceof Date && !isNaN(v.getTime());
+  }
+
+  function parseDateVal(v) {
+    if (isDate(v)) return v;
+    if (typeof v === 'number' && v > 20000 && v < 60000) {
+      const dt = new Date((v - 25569) * 86400 * 1000);
+      if (!isNaN(dt.getTime())) return dt;
+    }
+    if (typeof v === 'string' && v.trim()) {
+      const s = v.trim();
+      const normD = (typeof Norm !== 'undefined' && Norm.date) ? Norm.date(s) : s;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(normD)) {
+        const [y, m, d] = normD.split('-').map(Number);
+        return new Date(y, m - 1, d);
+      }
+    }
+    return null;
   }
 
   function isoDate(d) {
@@ -132,18 +171,49 @@ const Importer = (() => {
     const { r2, c1, c2 } = sheetRange(ws);
     const { headerRow, periodRow, studentStartRow } = meta;
 
-    // Build column definitions with forward-filled dates.
+    // Helper to check if any columns further right have valid data
+    function hasDataAhead(startCol) {
+      for (let c = startCol; c <= c2; c++) {
+        if (parseDateVal(cell(ws, headerRow, c))) return true;
+        const pRaw = normUp(cell(ws, periodRow, c));
+        if (PERIOD_RE.test(pRaw)) return true;
+        for (let r = studentStartRow; r <= Math.min(r2, studentStartRow + 5); r++) {
+          const v = cell(ws, r, c);
+          if (v !== undefined && v !== null && String(v).trim() !== '') return true;
+        }
+      }
+      return false;
+    }
+
+    // Build column definitions with forward-filled dates and merge awareness.
     const columns = [];
+    const detectedSheetLeaves = new Map(); // iso -> reason
     let lastDate = null;
     let blankStreak = 0;
+
     for (let c = c1 + 2; c <= c2; c++) {
-      const dateVal = cell(ws, headerRow, c);
+      const dateVal = parseDateVal(cell(ws, headerRow, c));
       const periodVal = normUp(cell(ws, periodRow, c));
-      if (isDate(dateVal)) { lastDate = dateVal; }
+      if (dateVal) { lastDate = dateVal; }
+
       const m = periodVal.match(PERIOD_RE);
       if (!lastDate || !m) {
         blankStreak++;
-        if (blankStreak > 6) break; // safety: stop after a long run of empty columns
+        if (lastDate) {
+          const merge = isCellMerged(ws, periodRow, c) || isCellMerged(ws, headerRow, c);
+          const rawPeriod = norm(cell(ws, periodRow, c));
+          const isLeaveText = /LEAVE|HOLIDAY|OFF|CL|OD|EXAM|TEST|NO\s*CLASS|H\b/i.test(rawPeriod);
+          if (merge || isLeaveText) {
+            const iso = isoDate(lastDate);
+            if (!detectedSheetLeaves.has(iso)) {
+              detectedSheetLeaves.set(iso, rawPeriod || 'Class Leave (blank merged cells in Excel)');
+            }
+          }
+        }
+        // Only stop if blank streak occurs AND no data ahead in subsequent columns
+        if (blankStreak > 4 && !hasDataAhead(c + 1)) {
+          break;
+        }
         continue;
       }
       blankStreak = 0;
@@ -167,14 +237,31 @@ const Importer = (() => {
 
     const records = [];
     const datesSeen = new Set();
+    const dateStudentAttendance = new Map(); // iso -> count of valid P/A
+    for (const colDef of columns) {
+      const iso = isoDate(colDef.date);
+      if (!dateStudentAttendance.has(iso)) dateStudentAttendance.set(iso, 0);
+    }
+
     for (const stu of students) {
       for (const colDef of columns) {
         const raw = normUp(cell(ws, stu.row, colDef.col));
+        const iso = isoDate(colDef.date);
         let status = null;
         if (raw === 'P') status = 'P';
         else if (raw === 'A') status = 'A';
-        else continue; // blank / holiday / SATURDAY / SUNDAY / OD / non-working -> not counted
-        const iso = isoDate(colDef.date);
+        else {
+          // Check if this student cell is inside a merged range (e.g. blank merged cells for leave)
+          const merge = isCellMerged(ws, stu.row, colDef.col);
+          const rawCell = norm(cell(ws, stu.row, colDef.col));
+          const isLeaveText = /LEAVE|HOLIDAY|OFF|CL|OD|EXAM|NO\s*CLASS|H\b/i.test(rawCell);
+          if ((merge || isLeaveText) && !detectedSheetLeaves.has(iso)) {
+            detectedSheetLeaves.set(iso, rawCell || 'Class Leave (blank merged cells in Excel)');
+          }
+          continue; // blank / merged / leave -> NEVER counted as P or A
+        }
+
+        dateStudentAttendance.set(iso, (dateStudentAttendance.get(iso) || 0) + 1);
         datesSeen.add(iso);
         records.push({
           nameKey: nameKey(stu.name),
@@ -188,7 +275,14 @@ const Importer = (() => {
       }
     }
 
-    return { records, students, dates: datesSeen };
+    // If on any date, columns were defined but 0 students had P/A records, it is an undeclared leave day!
+    for (const [iso, count] of dateStudentAttendance.entries()) {
+      if (count === 0 && !detectedSheetLeaves.has(iso)) {
+        detectedSheetLeaves.set(iso, 'Class Leave (blank merged cells in Excel)');
+      }
+    }
+
+    return { records, students, dates: datesSeen, detectedLeaves: detectedSheetLeaves };
   }
 
   const RESERVED_SHEET_RE = /^(timetable|timetable_new|sheet2|attendance\s*%|master attendance|sheet11)$/i;
@@ -197,6 +291,7 @@ const Importer = (() => {
     const timetable = findTimetableSheet(wb);
     const subjectSheets = [];
     const unrecognized = [];
+    const allDetectedLeaves = new Map(); // iso -> { date, reason, type }
 
     for (const name of wb.SheetNames) {
       if (RESERVED_SHEET_RE.test(name.trim())) continue;
@@ -205,11 +300,25 @@ const Importer = (() => {
       const meta = detectSubjectSheet(ws);
       if (!meta) { unrecognized.push(name); continue; }
       const parsed = parseSubjectSheet(name, ws, meta);
-      if (parsed.records.length === 0) { unrecognized.push(name); continue; }
+      if (parsed.detectedLeaves) {
+        for (const [dt, reason] of parsed.detectedLeaves.entries()) {
+          const isGovt = /GOVT|GOVERNMENT/i.test(reason);
+          const isCollege = /COLLEGE/i.test(reason);
+          const isExam = /EXAM|TEST/i.test(reason);
+          const type = isGovt ? 'GOVERNMENT_HOLIDAY' : isCollege ? 'COLLEGE_HOLIDAY' : isExam ? 'INTERNAL_EXAM' : 'CLASS_LEAVE';
+          if (!allDetectedLeaves.has(dt)) {
+            allDetectedLeaves.set(dt, { date: dt, reason, type });
+          }
+        }
+      }
+      if (parsed.records.length === 0 && (!parsed.detectedLeaves || parsed.detectedLeaves.size === 0)) {
+        unrecognized.push(name);
+        continue;
+      }
       subjectSheets.push({ sheetName: name, code: name.trim(), ...parsed });
     }
 
-    return { timetable, subjectSheets, unrecognized };
+    return { timetable, subjectSheets, unrecognized, detectedLeaves: [...allDetectedLeaves.values()] };
   }
 
   // ---- Merge plan against existing DB -----------------------------------
@@ -355,16 +464,38 @@ const Importer = (() => {
       potentialConflicts: plan.conflicts.length,
       holidaySkippedCount,
       holidayDatesList: [...holidayDatesSet].sort().slice(0, 5).join(', ') + (holidayDatesSet.size > 5 ? '...' : ''),
+      detectedLeaves: analysis.detectedLeaves || [],
       unrecognized: analysis.unrecognized,
       timetableFound: (analysis.timetable && analysis.timetable.entries.length > 0),
     };
   }
 
   async function commitImport(analysis, importPlanResult, conflictResolutions = {}, options = {}) {
-    const { plan, studentRegistry, subjectCodes } = importPlanResult;
+    const { plan, studentRegistry, subjectCodes, detectedLeaves } = importPlanResult;
     const now = new Date().toISOString();
     const skipHolidays = options.skipHolidays !== false;
+    const addDetectedLeaves = options.addDetectedLeaves !== false;
     const filterHolidays = (list) => skipHolidays ? list.filter((r) => !r.isHoliday) : list;
+
+    // 0. Auto-register recognized leaves in academic calendar
+    if (addDetectedLeaves && detectedLeaves && detectedLeaves.length > 0) {
+      const cal = (await DB.getMeta('academicCalendar', {})) || {};
+      let calChanged = false;
+      for (const l of detectedLeaves) {
+        if (!cal[l.date]) {
+          cal[l.date] = {
+            date: l.date,
+            type: l.type || 'CLASS_LEAVE',
+            reason: l.reason || 'Class Leave (blank merged cells in Excel)',
+            updatedAt: now,
+          };
+          calChanged = true;
+        }
+      }
+      if (calChanged) {
+        await DB.setMeta('academicCalendar', cal);
+      }
+    }
 
     // 1. Students: upsert student registry
     if (studentRegistry && studentRegistry.length > 0) {
