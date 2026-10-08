@@ -157,6 +157,7 @@ const SyncEngine = (() => {
         classInfo: await DB.getMeta('classInfo', {}),
         threshold: await DB.getMeta('threshold', 75),
         allocatedPeriods: await DB.getMeta('allocatedPeriods', {}),
+        academicCalendar: await DB.getMeta('academicCalendar', {}),
       },
     };
   }

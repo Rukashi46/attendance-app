@@ -104,7 +104,7 @@ const Calc = (() => {
 
   // Build a full stats object from the raw attendance record list.
   // records: [{studentId, date, period, subjectCode, status}]
-  function buildStats(records) {
+  function buildStats(records, academicCalendar = {}) {
     const deduped = deduplicateRecords(records);
     const byStudent = new Map(); // studentId -> { subjects: Map(code -> {p,a}), p, a }
     const bySubject = new Map(); // code -> { p, a, byStudent: Map(id -> {p,a}), periods: Set(date|period) }
@@ -113,6 +113,14 @@ const Calc = (() => {
 
     for (const r of deduped) {
       if (r.status !== 'P' && r.status !== 'A') continue;
+
+      // Exclude dates declared as holidays, leaves, or internal exam days
+      const d = (typeof Norm !== 'undefined' && Norm.date) ? Norm.date(r.date) : r.date;
+      const calEvent = academicCalendar[d];
+      if (calEvent && typeof Norm !== 'undefined' && Norm.isNoClassDay(calEvent)) {
+        continue;
+      }
+
       const inc = r.status === 'P' ? 'p' : 'a';
 
       // Normalize studentId and subjectCode for uniform grouping
@@ -280,10 +288,10 @@ const Calc = (() => {
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
   ];
 
-  function monthly(records, year, month /* 1-12 */) {
+  function monthly(records, year, month /* 1-12 */, academicCalendar = {}) {
     const prefix = `${year}-${String(month).padStart(2, '0')}`;
     const filtered = records.filter((r) => r.date.startsWith(prefix) && (r.status === 'P' || r.status === 'A'));
-    const stats = buildStats(filtered);
+    const stats = buildStats(filtered, academicCalendar);
     const overall = classOverall(stats);
     const subjects = {};
     for (const code of stats.bySubject.keys()) subjects[code] = subjectSummary(stats, code);
@@ -298,11 +306,15 @@ const Calc = (() => {
       total: overall.total,
       pct: overall.pct,
       subjects,
-      workingPeriods: new Set(filtered.map((r) => `${r.date}|${r.period}`)).size,
+      workingPeriods: new Set(filtered.filter(r => {
+        const d = (typeof Norm !== 'undefined' && Norm.date) ? Norm.date(r.date) : r.date;
+        const ev = academicCalendar[d];
+        return !(ev && typeof Norm !== 'undefined' && Norm.isNoClassDay(ev));
+      }).map((r) => `${r.date}|${r.period}`)).size,
     };
   }
 
-  function allMonthlyStats(records, target = 75, allocatedPeriods = {}) {
+  function allMonthlyStats(records, target = 75, allocatedPeriods = {}, academicCalendar = {}) {
     const monthKeys = new Set();
     for (const r of records) {
       if ((r.status === 'P' || r.status === 'A') && r.date && r.date.length >= 7) {
@@ -315,9 +327,13 @@ const Calc = (() => {
       const year = parseInt(yStr, 10);
       const month = parseInt(mStr, 10);
       const filtered = records.filter((r) => r.date.startsWith(key) && (r.status === 'P' || r.status === 'A'));
-      const stats = buildStats(filtered);
+      const stats = buildStats(filtered, academicCalendar);
       const overall = classOverall(stats);
-      const workingPeriods = new Set(filtered.map((r) => `${r.date}|${r.period}`)).size;
+      const workingPeriods = new Set(filtered.filter(r => {
+        const d = (typeof Norm !== 'undefined' && Norm.date) ? Norm.date(r.date) : r.date;
+        const ev = academicCalendar[d];
+        return !(ev && typeof Norm !== 'undefined' && Norm.isNoClassDay(ev));
+      }).map((r) => `${r.date}|${r.period}`)).size;
       const uniqueDates = new Set(filtered.map((r) => r.date)).size;
 
       // Subject breakdown for this month
@@ -383,10 +399,16 @@ const Calc = (() => {
     });
   }
 
-  function studentMonthlyStats(records, studentId, target = 75) {
-    const studentRecords = records.filter(
-      (r) => r.studentId === studentId && (r.status === 'P' || r.status === 'A')
-    );
+  function studentMonthlyStats(records, studentId, target = 75, academicCalendar = {}) {
+    const studentRecords = records.filter((r) => {
+      const d = (typeof Norm !== 'undefined' && Norm.date) ? Norm.date(r.date) : r.date;
+      const ev = academicCalendar[d];
+      if (ev && typeof Norm !== 'undefined' && Norm.isNoClassDay(ev)) return false;
+      const isMatch = (typeof Norm !== 'undefined' && Norm.isSameStudent)
+        ? Norm.isSameStudent(r.studentId, studentId)
+        : (r.studentId === studentId);
+      return isMatch && (r.status === 'P' || r.status === 'A');
+    });
     const monthMap = new Map();
     for (const r of studentRecords) {
       const key = r.date.slice(0, 7);
@@ -439,12 +461,15 @@ const Calc = (() => {
     });
   }
 
-  function subjectMonthlyStats(records, subjectCode) {
+  function subjectMonthlyStats(records, subjectCode, academicCalendar = {}) {
     const norm = (s) => (s || '').trim().toUpperCase();
     const targetNorm = norm(subjectCode);
-    const subRecords = records.filter(
-      (r) => norm(r.subjectCode) === targetNorm && (r.status === 'P' || r.status === 'A')
-    );
+    const subRecords = records.filter((r) => {
+      const d = (typeof Norm !== 'undefined' && Norm.date) ? Norm.date(r.date) : r.date;
+      const ev = academicCalendar[d];
+      if (ev && typeof Norm !== 'undefined' && Norm.isNoClassDay(ev)) return false;
+      return norm(r.subjectCode) === targetNorm && (r.status === 'P' || r.status === 'A');
+    });
     const monthMap = new Map();
     for (const r of subRecords) {
       const key = r.date.slice(0, 7);
@@ -496,3 +521,6 @@ const Calc = (() => {
     deduplicateRecords,
   };
 })();
+
+if (typeof window !== 'undefined') window.Calc = Calc;
+if (typeof globalThis !== 'undefined') globalThis.Calc = Calc;

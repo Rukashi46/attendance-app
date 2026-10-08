@@ -213,12 +213,14 @@ const Importer = (() => {
   }
 
   // ---- Merge plan against existing DB -----------------------------------
+  // ---- Merge plan against existing DB -----------------------------------
   async function buildImportPlan(analysis) {
-    const [existingAttendance, existingStudents, existingSubjects, existingTimetable] = await Promise.all([
+    const [existingAttendance, existingStudents, existingSubjects, existingTimetable, academicCalendar] = await Promise.all([
       DB.getAll('attendance'),
       DB.getAll('students'),
       DB.getAll('subjects'),
       DB.getAll('timetable'),
+      DB.getMeta('academicCalendar', {}),
     ]);
 
     const timetableEntries = (analysis.timetable && analysis.timetable.entries.length > 0)
@@ -281,6 +283,8 @@ const Importer = (() => {
     }
 
     let totalRecords = 0;
+    let holidaySkippedCount = 0;
+    const holidayDatesSet = new Set();
     const uniqueDates = new Set();
     const plan = { toInsert: [], toAutoUpdate: [], conflicts: [], duplicates: 0 };
 
@@ -292,6 +296,13 @@ const Importer = (() => {
         const canonDate = Norm.date(rec.date);
         const canonPeriod = Norm.period(rec.period);
         uniqueDates.add(canonDate);
+
+        // Check if date is declared holiday / exam in academic calendar
+        const isHolidayDate = !!(academicCalendar && academicCalendar[canonDate] && Norm.isNoClassDay(academicCalendar[canonDate].type));
+        if (isHolidayDate) {
+          holidaySkippedCount++;
+          holidayDatesSet.add(canonDate);
+        }
 
         // Resolve canonical subject code for this specific record
         const rawSubj = rec.subjectCode || sheet.code;
@@ -310,6 +321,7 @@ const Importer = (() => {
           status: rec.status,
           displayName: rec.displayName,
           rollNo: rec.rollNo,
+          isHoliday: isHolidayDate,
         };
 
         if (!existing) {
@@ -341,14 +353,18 @@ const Importer = (() => {
       updatedRecords: plan.toAutoUpdate.length,
       duplicatesPrevented: plan.duplicates,
       potentialConflicts: plan.conflicts.length,
+      holidaySkippedCount,
+      holidayDatesList: [...holidayDatesSet].sort().slice(0, 5).join(', ') + (holidayDatesSet.size > 5 ? '...' : ''),
       unrecognized: analysis.unrecognized,
       timetableFound: (analysis.timetable && analysis.timetable.entries.length > 0),
     };
   }
 
-  async function commitImport(analysis, importPlanResult, conflictResolutions = {}) {
+  async function commitImport(analysis, importPlanResult, conflictResolutions = {}, options = {}) {
     const { plan, studentRegistry, subjectCodes } = importPlanResult;
     const now = new Date().toISOString();
+    const skipHolidays = options.skipHolidays !== false;
+    const filterHolidays = (list) => skipHolidays ? list.filter((r) => !r.isHoliday) : list;
 
     // 1. Students: upsert student registry
     if (studentRegistry && studentRegistry.length > 0) {
@@ -393,8 +409,11 @@ const Importer = (() => {
       updatedAt: now,
     });
 
-    plan.toInsert.forEach((r) => toWrite.push(finalize(r)));
-    for (const r of plan.toAutoUpdate) {
+    const activeInserts = filterHolidays(plan.toInsert);
+    const activeUpdates = filterHolidays(plan.toAutoUpdate);
+
+    activeInserts.forEach((r) => toWrite.push(finalize(r)));
+    for (const r of activeUpdates) {
       toWrite.push(finalize(r));
       if (r.existingKey && r.existingKey !== r.key) {
         await DB.del('attendance', r.existingKey);
@@ -403,6 +422,7 @@ const Importer = (() => {
 
     let resolvedCount = 0;
     for (const c of plan.conflicts) {
+      if (skipHolidays && c.incoming.isHoliday) continue;
       const resolution = conflictResolutions[c.key]; // 'keep' | 'use-new'
       if (resolution === 'use-new') {
         toWrite.push(finalize(c.incoming));
@@ -422,8 +442,8 @@ const Importer = (() => {
 
     await DB.setMeta('lastImport', {
       at: now,
-      inserted: plan.toInsert.length,
-      updated: plan.toAutoUpdate.length,
+      inserted: activeInserts.length,
+      updated: activeUpdates.length + resolvedCount,
       duplicates: plan.duplicates,
       conflictsResolved: resolvedCount,
       conflictsRemaining: plan.conflicts.length - resolvedCount,

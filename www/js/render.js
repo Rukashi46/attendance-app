@@ -138,32 +138,59 @@ const Render = (() => {
       </div>
 
       <div class="section-title">Today &middot; ${esc(d.todayDayName)}</div>
-      <div class="row" style="margin-bottom:10px;gap:8px">
-        <button class="btn sm" data-action="go-mark-session" data-date="${d.todayIso}" data-session="morning" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px">
-          🌅 Morning (${morningCount})
-        </button>
-        <button class="btn sm" data-action="go-mark-session" data-date="${d.todayIso}" data-session="afternoon" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px">
-          🌇 Afternoon (${afternoonCount})
-        </button>
-      </div>
-
-      <div class="card">
-        ${d.todayClasses.length === 0 ? `<div class="empty small">No classes scheduled today.</div>` :
-          d.todayClasses.map(c => `
-          <div class="list-item">
-            <div class="avatar">P${c.period}</div>
-            <div style="flex:1">
-              <div class="name">${esc(c.subjectName)}</div>
-              <div class="sub">${esc(c.time || '')}</div>
+      ${(() => {
+        const ev = d.todayEvent;
+        const isNoClass = ev && typeof Norm !== 'undefined' && Norm.isNoClassDay(ev.type);
+        if (isNoClass) {
+          const meta = Norm.getCalendarTypeMeta(ev.type);
+          return `
+          <div class="card glow" style="border-left:4px solid ${meta.color};margin-bottom:12px">
+            <div class="row between" style="align-items:flex-start">
+              <div>
+                <span class="badge" style="background:${meta.color}22;color:${meta.color};font-size:12px;margin-bottom:6px">
+                  ${meta.emoji} ${meta.label}
+                </span>
+                <div class="name" style="font-size:17px">${esc(ev.reason || meta.label)}</div>
+                <div class="sub" style="margin-top:4px">
+                  ${ev.type === 'INTERNAL_EXAM'
+                    ? 'Internal examination conducted today. Normal subject teaching attendance is not required.'
+                    : 'Declared holiday / no-class day. Classes are suspended and not counted in attendance totals.'}
+                </div>
+              </div>
             </div>
-            ${c.done
-              ? `<div class="row" style="gap:6px">
-                   <span class="badge present">Done · ${c.present}/${c.present + c.absent}</span>
-                   <button class="btn sm" data-action="go-mark-period" data-date="${d.todayIso}" data-period="${c.period}" data-code="${esc(c.code)}">Edit</button>
-                 </div>`
-              : `<button class="btn sm primary" data-action="go-mark-period" data-date="${d.todayIso}" data-period="${c.period}" data-code="${esc(c.code)}">Mark</button>`}
-          </div>`).join('')}
-      </div>
+            <div style="margin-top:12px">
+              <a href="#/calendar/${d.todayIso}" class="btn sm" style="text-decoration:none;display:inline-block">Academic Calendar &rarr;</a>
+            </div>
+          </div>`;
+        }
+        return `
+        <div class="row" style="margin-bottom:10px;gap:8px">
+          <button class="btn sm" data-action="go-mark-session" data-date="${d.todayIso}" data-session="morning" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px">
+            🌅 Morning (${morningCount})
+          </button>
+          <button class="btn sm" data-action="go-mark-session" data-date="${d.todayIso}" data-session="afternoon" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px">
+            🌇 Afternoon (${afternoonCount})
+          </button>
+        </div>
+
+        <div class="card">
+          ${d.todayClasses.length === 0 ? `<div class="empty small">No classes scheduled today.</div>` :
+            d.todayClasses.map(c => `
+            <div class="list-item">
+              <div class="avatar">P${c.period}</div>
+              <div style="flex:1">
+                <div class="name">${esc(c.subjectName)}</div>
+                <div class="sub">${esc(c.time || '')}</div>
+              </div>
+              ${c.done
+                ? `<div class="row" style="gap:6px">
+                     <span class="badge present">Done · ${c.present}/${c.present + c.absent}</span>
+                     <button class="btn sm" data-action="go-mark-period" data-date="${d.todayIso}" data-period="${c.period}" data-code="${esc(c.code)}">Edit</button>
+                   </div>`
+                : `<button class="btn sm primary" data-action="go-mark-period" data-date="${d.todayIso}" data-period="${c.period}" data-code="${esc(c.code)}">Mark</button>`}
+            </div>`).join('')}
+        </div>`;
+      })()}
 
       <div class="section-title">Attention needed</div>
       <div class="card">
@@ -348,6 +375,8 @@ const Render = (() => {
 
   // ---------------- Mark attendance ----------------
   function markHome(d) {
+    const isNoClass = d.calendarEvent && typeof Norm !== 'undefined' && Norm.isNoClassDay(d.calendarEvent.type);
+    const calMeta = isNoClass ? Norm.getCalendarTypeMeta(d.calendarEvent.type) : null;
     const morningClasses = d.classes.filter(c => c.period <= 4);
     const afternoonClasses = d.classes.filter(c => c.period > 4);
     const morningDone = morningClasses.length > 0 && morningClasses.every(c => c.marked);
@@ -359,6 +388,29 @@ const Render = (() => {
       <label style="margin-top:0">Date</label>
       <input type="date" id="mark-date" value="${d.date}" max="${d.today}" />
 
+      ${isNoClass ? `
+      <div class="card glow" style="border-left:4px solid ${calMeta.color};margin-top:14px">
+        <div style="display:flex;align-items:flex-start;gap:12px">
+          <span style="font-size:28px;line-height:1">${calMeta.emoji}</span>
+          <div style="flex:1">
+            <span class="badge" style="background:${calMeta.color}22;color:${calMeta.color};font-size:12px">
+              ${calMeta.label}
+            </span>
+            <div class="name" style="font-size:17px;margin-top:4px">${esc(d.calendarEvent.reason || calMeta.label)}</div>
+            <div class="sub" style="margin-top:6px;line-height:1.4">
+              ${d.calendarEvent.type === 'INTERNAL_EXAM'
+                ? 'Internal examination date. Regular teaching attendance is not required or counted.'
+                : 'Declared holiday / no-class day. Regular teaching periods are suspended and not counted as held or absent.'}
+            </div>
+          </div>
+        </div>
+        <div class="btn-row" style="margin-top:14px">
+          <a href="#/calendar/${d.date}" class="btn sm block" style="text-decoration:none;text-align:center">
+            Manage Date in Academic Calendar &rarr;
+          </a>
+        </div>
+      </div>
+      ` : `
       <div class="section-title">Session Bulk Marking · ${esc(d.dayName)}</div>
       <div class="grid-2">
         <div class="card glow" style="padding:14px">
@@ -423,6 +475,7 @@ const Render = (() => {
         </select>
         <button class="btn primary block" style="margin-top:14px" data-action="go-mark-manual">Open student list</button>
       </div>
+      `}
     </div>`;
   }
 
@@ -628,29 +681,106 @@ const Render = (() => {
 
   // ---------------- Calendar ----------------
   function calendarHome(d) {
+    const declaredEvents = d.declaredEvents || [];
     return `
-    ${topbar('Calendar', { back: true })}
+    ${topbar('Academic Calendar', { back: true })}
     <div class="content">
-      <input type="date" id="cal-date" value="${d.date}" />
-      <div style="margin-top:12px"><button class="btn primary block" data-action="go-calendar-day" data-date="${d.date}">View day</button></div>
-      <div class="section-title">Recent</div>
+      <div class="card glow">
+        <div class="stat-label">Select Date</div>
+        <input type="date" id="cal-date" value="${d.date}" style="font-size:16px;margin:8px 0" />
+        <button class="btn primary block" data-action="go-calendar-day" data-date="${d.date}">Manage Day Status &rarr;</button>
+      </div>
+
+      <div class="section-title">Declared Holidays &amp; Non-Teaching Days (${declaredEvents.length})</div>
+      <div class="card">
+        ${declaredEvents.length === 0 ? `<div class="empty small">No holidays or special days declared yet. Pick any date above to declare a Government Holiday, College Holiday, Class Leave, or Internal Exam.</div>` :
+          declaredEvents.map(ev => {
+            const meta = Norm.getCalendarTypeMeta(ev.type);
+            return `
+            <div class="list-item" style="align-items:center">
+              <div style="font-size:22px;line-height:1;width:32px;text-align:center">${meta.emoji}</div>
+              <div style="flex:1">
+                <div class="name">${esc(fmtDate(ev.date))} &middot; <span class="badge" style="background:${meta.color}22;color:${meta.color}">${esc(meta.label)}</span></div>
+                <div class="sub">${esc(ev.reason || meta.label)}</div>
+              </div>
+              <a href="#/calendar/${ev.date}" class="btn sm" style="text-decoration:none">Edit</a>
+            </div>`;
+          }).join('')}
+      </div>
+
+      <div class="section-title">Recent Attendance Records</div>
       <div class="card">
         ${d.recentDates.length === 0 ? `<div class="empty small">No attendance recorded yet.</div>` :
           d.recentDates.map(dt => `
           <a href="#/calendar/${dt}" class="list-item" style="text-decoration:none;color:inherit">
-            <div class="name">${esc(fmtDate(dt))}</div>
+            <div style="flex:1">
+              <div class="name">${esc(fmtDate(dt))}</div>
+              <div class="sub">${esc(dayNameOf(dt))}</div>
+            </div>
+            <span class="muted small">&rarr;</span>
           </a>`).join('')}
       </div>
     </div>`;
   }
 
   function calendarDay(d) {
+    const ev = d.currentEvent || null;
+    const currentType = ev ? ev.type : 'NORMAL';
+    const currentMeta = Norm.getCalendarTypeMeta(currentType);
+    const isNoClass = Norm.isNoClassDay(currentType);
+
+    const typeOptions = [
+      { code: 'NORMAL', label: 'Normal Working Day', emoji: '✅' },
+      { code: 'GOVERNMENT_HOLIDAY', label: 'Government Holiday', emoji: '🌴' },
+      { code: 'COLLEGE_HOLIDAY', label: 'College Holiday', emoji: '🏫' },
+      { code: 'CLASS_LEAVE', label: 'Class Leave', emoji: '🚫' },
+      { code: 'INTERNAL_EXAM', label: 'Internal Examination', emoji: '📝' },
+      { code: 'OTHER_NO_CLASS', label: 'Other No-Class Day', emoji: '⏸️' },
+    ];
+
     return `
     ${topbar(fmtDate(d.date), { back: true })}
     <div class="content">
-      ${d.periods.length === 0 ? `<div class="empty">No attendance recorded for this date.</div>` :
+      <div class="card glow">
+        <div class="row between" style="align-items:center;margin-bottom:8px">
+          <div>
+            <div class="name" style="font-size:17px">${esc(dayNameOf(d.date))} &middot; ${esc(fmtDate(d.date))}</div>
+            <div class="sub">Academic Day Status</div>
+          </div>
+          <span class="badge" style="background:${currentMeta.color}22;color:${currentMeta.color};font-size:13px;padding:4px 10px">
+            ${currentMeta.emoji} ${currentMeta.label}
+          </span>
+        </div>
+
+        <label style="margin-top:10px">Status</label>
+        <select id="cal-status-select" style="font-size:15px">
+          ${typeOptions.map(opt => `<option value="${opt.code}" ${currentType===opt.code?'selected':''}>${opt.emoji} ${opt.label}</option>`).join('')}
+        </select>
+
+        <label>Reason / Note</label>
+        <input id="cal-reason-input" placeholder="e.g. Independence Day, First Internal Exam" value="${esc(ev ? ev.reason : '')}" />
+
+        <div class="btn-row" style="margin-top:14px">
+          <button class="btn primary block" data-action="save-calendar-status" data-date="${d.date}">Save Day Status</button>
+          ${isNoClass ? `<button class="btn danger block" data-action="remove-calendar-status" data-date="${d.date}">Restore Working Day</button>` : ''}
+        </div>
+      </div>
+
+      ${isNoClass ? `
+      <div class="card" style="border-left:4px solid ${currentMeta.color}">
+        <div style="font-weight:700;color:${currentMeta.color}">${currentMeta.emoji} ${currentMeta.label} Declared</div>
+        <div class="small muted" style="margin-top:4px">
+          ${currentType === 'INTERNAL_EXAM'
+            ? 'Internal examination periods do not count as regular teaching attendance and do not consume subject quota.'
+            : 'Classes on this date are excluded from total held periods and attendance calculations (never counted as absences).'}
+        </div>
+      </div>
+      ` : ''}
+
+      <div class="section-title">Recorded Periods for this Day (${d.periods.length})</div>
+      ${d.periods.length === 0 ? `<div class="card"><div class="empty small">No attendance recorded for this date.</div></div>` :
       d.periods.map(p => `
-      <a href="#/mark/period/${d.date}/${p.period}/${encodeURIComponent(p.subjectCode)}" class="card" style="display:block;text-decoration:none;color:inherit">
+      <a href="#/mark/period/${d.date}/${p.period}/${encodeURIComponent(p.subjectCode)}" class="card" style="display:block;text-decoration:none;color:inherit;margin-bottom:8px">
         <div class="row between">
           <div><div class="name">P${p.period} — ${esc(p.subjectCode)}</div></div>
           <div class="row" style="gap:6px">
@@ -966,7 +1096,7 @@ const Render = (() => {
           <button class="icon-btn" data-action="confirm-modal-no" style="border:none;background:transparent;font-size:18px">✕</button>
         </div>
         <div class="modal-body form-body">
-          <p class="small" style="margin:0">${esc(d.message)}</p>
+          <p class="small" style="margin:0;white-space:pre-line;line-height:1.5">${esc(d.message)}</p>
         </div>
         <div class="modal-footer">
           <button class="btn block" data-action="confirm-modal-no">Cancel</button>
@@ -1064,6 +1194,17 @@ const Render = (() => {
       <div class="row between small" style="margin-bottom:4px"><span>Already up to date</span><b>${r.duplicatesPrevented}</b></div>
       <div class="row between small" style="margin-bottom:4px"><span>Records to update</span><b style="color:var(--warn)">${r.updatedRecords}</b></div>
       <div class="row between small" style="margin-bottom:4px"><span>Conflicts (manual vs import)</span><b style="color:${r.potentialConflicts?'var(--absent)':'inherit'}">${r.potentialConflicts}</b></div>
+      ${r.holidaySkippedCount ? `
+      <div class="card" style="margin:10px 0;border-left:4px solid var(--warn);background:rgba(251,191,36,0.08)">
+        <div style="font-weight:700;color:var(--warn)">⚠️ Academic Calendar Notice</div>
+        <div class="small" style="margin-top:4px">
+          <b>${r.holidaySkippedCount}</b> records fall on declared holidays or exam dates (${esc(r.holidayDatesList || '')}).
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="import-skip-holidays" checked style="width:auto;margin:0" />
+          Skip records on declared holiday / exam dates (Recommended)
+        </label>
+      </div>` : ''}
       ${!r.timetableFound ? `<div class="small" style="color:var(--warn);margin-top:8px">No timetable sheet recognized — "Today's Classes" will be limited until one is added.</div>` : ''}
       ${r.unrecognized.length ? `<div class="small muted" style="margin-top:8px">Sheets not recognized as attendance data: ${r.unrecognized.map(esc).join(', ')}</div>` : ''}
       <div class="btn-row" style="margin-top:14px">
@@ -1156,6 +1297,28 @@ const Render = (() => {
         <label>Academic year</label>
         <input id="s-year" value="${esc(d.classInfo.academicYear||'')}" />
         <button class="btn primary block" style="margin-top:14px" data-action="save-class-info">Save</button>
+      </div>
+
+      <div class="section-title">Data Management</div>
+      <div class="card">
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;font-size:15px">Attendance Records</div>
+          <div class="small muted" style="margin-top:2px">
+            Current attendance records: <b>${(d.attendanceCount || 0).toLocaleString()}</b>
+          </div>
+          <div class="small muted" style="margin-top:4px">
+            Permanently removes all attendance records so you can start fresh or re-import from Excel. Students, subjects, timetable, quota settings, and calendar are preserved.
+          </div>
+        </div>
+        <button class="btn danger block" data-action="prompt-clear-attendance">Clear Attendance Data</button>
+
+        <div style="margin-top:18px;padding-top:14px;border-top:1px dashed var(--card-border)">
+          <div style="font-weight:600;font-size:14px;color:var(--absent)">Factory Reset</div>
+          <div class="small muted" style="margin-top:2px;margin-bottom:10px">
+            Completely erase all application data (students, subjects, timetable, settings, attendance).
+          </div>
+          <button class="btn block" style="border-color:var(--absent);color:var(--absent)" data-action="prompt-factory-reset">Factory Reset</button>
+        </div>
       </div>
 
       <div class="section-title">Low attendance threshold</div>

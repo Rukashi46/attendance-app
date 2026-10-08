@@ -139,6 +139,7 @@
     cache.classInfo = await DB.getMeta('classInfo', {});
     cache.lastImport = await DB.getMeta('lastImport', null);
     cache.allocatedPeriods = await DB.getMeta('allocatedPeriods', {});
+    cache.academicCalendar = await DB.getMeta('academicCalendar', {}) || {};
     // Normalize syncConfig field names — fall back to hardcoded defaults if DB record is stale
     const sc = await DB.getMeta('syncConfig', null) || {};
     const SC_DEFAULTS = {
@@ -257,10 +258,11 @@
   // Views
   // ------------------------------------------------------------------
   async function viewDashboard() {
-    const stats = Calc.buildStats(cache.attendance);
+    const stats = Calc.buildStats(cache.attendance, cache.academicCalendar);
     const overall = Calc.classOverall(stats);
     const today = todayIso();
     const dayName = Render.dayNameOf(today);
+    const todayEvent = (cache.academicCalendar && cache.academicCalendar[today]) || null;
     const todaysTT = cache.timetable.filter((t) => t.day === dayName).sort((a, b) => a.period - b.period);
     const todayClasses = todaysTT.map((t) => {
       const subject = matchSubjectByNormCode(t.code);
@@ -301,7 +303,7 @@
     }
 
     const now = new Date();
-    const curMonthStats = Calc.monthly(cache.attendance, now.getFullYear(), now.getMonth() + 1);
+    const curMonthStats = Calc.monthly(cache.attendance, now.getFullYear(), now.getMonth() + 1, cache.academicCalendar);
 
     const data = {
       overallPct: overall.pct,
@@ -312,6 +314,7 @@
       absentToday: absentTodayCount,
       todayDayName: dayName,
       todayIso: today,
+      todayEvent,
       todayClasses,
       threshold: cache.threshold,
       lowCount: Calc.lowAttendance(stats, cache.threshold).length,
@@ -321,7 +324,7 @@
   }
 
   function filteredSortedStudents() {
-    const stats = Calc.buildStats(cache.attendance);
+    const stats = Calc.buildStats(cache.attendance, cache.academicCalendar);
     let list = cache.students.map((s) => ({ ...s, pct: Calc.studentOverall(stats, s.id, cache.threshold, cache.allocatedPeriods).pct }));
     const q = studentsState.query.trim().toLowerCase();
     if (q) {
@@ -355,6 +358,7 @@
     const s = studentById(id);
     if (!s) { location.hash = '#/students'; return; }
     const sCanonId = s.id;
+    const stats = Calc.buildStats(cache.attendance, cache.academicCalendar);
     const overall = Calc.studentOverall(stats, sCanonId, cache.threshold, cache.allocatedPeriods);
     const subjectNames = Object.fromEntries(cache.subjects.map((sub) => [sub.code, sub.name]));
     const byDate = new Map();
@@ -364,7 +368,7 @@
       byDate.get(d)[a.status === 'P' ? 'present' : 'absent']++;
     });
     const recentDays = [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
-    const monthlyStats = Calc.studentMonthlyStats(cache.attendance, sCanonId, cache.threshold);
+    const monthlyStats = Calc.studentMonthlyStats(cache.attendance, sCanonId, cache.threshold, cache.academicCalendar);
     view().innerHTML = Render.studentDetail({
       student: s,
       stats: overall,
@@ -383,7 +387,8 @@
   async function viewMarkHome() {
     const date = Norm.date(markHomeState.date);
     const dayName = Render.dayNameOf(date);
-    const stats = Calc.buildStats(cache.attendance);
+    const calendarEvent = (cache.academicCalendar && cache.academicCalendar[date]) || null;
+    const stats = Calc.buildStats(cache.attendance, cache.academicCalendar);
     const tt = cache.timetable.filter((t) => t.day === dayName).sort((a, b) => a.period - b.period);
     const classes = tt.map((t) => {
       const subject = matchSubjectByNormCode(t.code);
@@ -401,7 +406,7 @@
         absent: recs.filter((r) => r.status === 'A').length,
       };
     });
-    view().innerHTML = Render.markHome({ date, dayName, classes, subjects: cache.subjects, today: todayIso() });
+    view().innerHTML = Render.markHome({ date, dayName, classes, subjects: cache.subjects, today: todayIso(), calendarEvent });
   }
 
   async function viewMarkPeriod(date, period, code) {
@@ -499,7 +504,7 @@
   }
 
   async function viewSubjects() {
-    const stats = Calc.buildStats(cache.attendance);
+    const stats = Calc.buildStats(cache.attendance, cache.academicCalendar);
     const subjects = cache.subjects.map((s) => ({ ...s, pct: Calc.subjectSummary(stats, s.code, cache.threshold, cache.allocatedPeriods).pct }));
     subjects.sort((a, b) => a.code.localeCompare(b.code));
     view().innerHTML = Render.subjectsList({ subjects, threshold: cache.threshold });
@@ -507,12 +512,12 @@
 
   async function viewSubjectDetail(code, filter = 'all') {
     const subject = subjectByCode(code) || { code, name: code };
-    const stats = Calc.buildStats(cache.attendance);
+    const stats = Calc.buildStats(cache.attendance, cache.academicCalendar);
     const summary = Calc.subjectSummary(stats, code, cache.threshold, cache.allocatedPeriods);
     const students = summary.students.map((r) => ({ ...r, name: (studentById(r.studentId) || {}).name || '—' }));
     const above = students.filter((s) => s.pct !== null && s.pct >= cache.threshold).length;
     const below = students.filter((s) => s.pct !== null && s.pct < cache.threshold).length;
-    const monthlyStats = Calc.subjectMonthlyStats(cache.attendance, code);
+    const monthlyStats = Calc.subjectMonthlyStats(cache.attendance, code, cache.academicCalendar);
     view().innerHTML = Render.subjectDetail({
       code: subject.code,
       name: subject.name,
@@ -530,24 +535,40 @@
 
   async function viewLowAttendance() {
     const threshold = lowAttThreshold ?? cache.threshold;
-    const stats = Calc.buildStats(cache.attendance);
+    const stats = Calc.buildStats(cache.attendance, cache.academicCalendar);
     const rows = Calc.lowAttendance(stats, threshold).map((r) => ({ ...r, name: (studentById(r.studentId) || {}).name || '—' }));
     view().innerHTML = Render.lowAttendance({ threshold, rows });
   }
 
   async function viewCalendarHome() {
-    const dates = [...new Set(cache.attendance.map((a) => a.date))].sort((a, b) => b.localeCompare(a)).slice(0, 15);
-    view().innerHTML = Render.calendarHome({ date: calendarState.date, recentDates: dates });
+    const declaredEvents = Object.values(cache.academicCalendar || {})
+      .filter((e) => typeof Norm !== 'undefined' && Norm.isNoClassDay(e.type))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const dates = [...new Set(cache.attendance.map((a) => Norm.date(a.date)))].sort((a, b) => b.localeCompare(a)).slice(0, 15);
+    view().innerHTML = Render.calendarHome({
+      date: calendarState.date || todayIso(),
+      declaredEvents,
+      recentDates: dates,
+    });
   }
 
   async function viewCalendarDay(date) {
-    const stats = Calc.buildStats(cache.attendance);
+    calendarState.date = date;
+    const stats = Calc.buildStats(cache.attendance, cache.academicCalendar);
     const bd = Calc.dateBreakdown(stats, date);
-    view().innerHTML = Render.calendarDay({ date, periods: bd ? bd.periods : [] });
+    const currentEvent = (cache.academicCalendar && cache.academicCalendar[date]) || null;
+    const dayName = Render.dayNameOf(date);
+    const tt = cache.timetable.filter((t) => t.day === dayName).sort((a, b) => a.period - b.period);
+    view().innerHTML = Render.calendarDay({
+      date,
+      currentEvent,
+      periods: bd ? bd.periods : [],
+      timetable: tt,
+    });
   }
 
   async function viewReports() {
-    const stats = Calc.buildStats(cache.attendance);
+    const stats = Calc.buildStats(cache.attendance, cache.academicCalendar);
     const overall = Calc.classOverall(stats);
     const subjects = cache.subjects.map((s) => {
       const sum = Calc.subjectSummary(stats, s.code, cache.threshold, cache.allocatedPeriods);
@@ -565,7 +586,7 @@
     subjects.sort((a, b) => a.code.localeCompare(b.code));
 
     const now = new Date();
-    const currentMonth = Calc.monthly(cache.attendance, now.getFullYear(), now.getMonth() + 1);
+    const currentMonth = Calc.monthly(cache.attendance, now.getFullYear(), now.getMonth() + 1, cache.academicCalendar);
     const studentsList = cache.students
       .filter((s) => s.active !== false)
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -580,7 +601,7 @@
   }
 
   async function viewMonthlyStats() {
-    const monthlyList = Calc.allMonthlyStats(cache.attendance, cache.threshold, cache.allocatedPeriods);
+    const monthlyList = Calc.allMonthlyStats(cache.attendance, cache.threshold, cache.allocatedPeriods, cache.academicCalendar);
     if (!monthlyState.selectedMonth && monthlyList.length > 0) {
       monthlyState.selectedMonth = monthlyList[0].key;
     }
@@ -603,7 +624,15 @@
   async function viewMore() { view().innerHTML = Render.more(); }
   async function viewImport() { importState = null; view().innerHTML = Render.importHome(); }
   async function viewBackup() { view().innerHTML = Render.backup(); }
-  async function viewSettings() { view().innerHTML = Render.settings({ theme: cache.theme, classInfo: cache.classInfo, threshold: cache.threshold, syncConfig: cache.syncConfig }); }
+  async function viewSettings() {
+    view().innerHTML = Render.settings({
+      theme: cache.theme,
+      classInfo: cache.classInfo,
+      threshold: cache.threshold,
+      syncConfig: cache.syncConfig,
+      attendanceCount: cache.attendance.length,
+    });
+  }
 
   // ------------------------------------------------------------------
   // Actions
@@ -926,7 +955,8 @@
       return;
     }
     if (action === 'go-calendar-day') {
-      const date = document.getElementById('cal-date').value;
+      const input = document.getElementById('cal-date');
+      const date = (input && input.value) || btn.dataset.date || todayIso();
       location.hash = `#/calendar/${date}`;
       return;
     }
@@ -1041,10 +1071,108 @@
       return;
     }
 
+    if (action === 'prompt-clear-attendance') {
+      const count = cache.attendance.length;
+      const ok = await openConfirmModal({
+        title: 'Clear Attendance Data?',
+        message: `Current attendance records:
+${count.toLocaleString()}
+
+This action will permanently remove:
+${count.toLocaleString()} attendance records
+
+Students, subjects, timetable, quota settings, and settings will NOT be deleted.
+
+You can import a fresh Excel attendance file afterwards.`,
+        confirmLabel: 'Clear Attendance Data',
+        danger: true,
+      });
+      if (!ok) return;
+      await DB.clearStore('attendance');
+      await DB.setMeta('lastImport', null);
+      await loadCache();
+      if (window.SyncEngine && cache.syncConfig?.enabled) {
+        SyncEngine.sync({ force: true }).catch(() => {});
+      }
+      showToast('Attendance data cleared successfully (0 records).');
+      viewSettings();
+      return;
+    }
+
+    if (action === 'prompt-factory-reset') {
+      const ok = await openConfirmModal({
+        title: 'Factory Reset?',
+        message: `This will permanently erase ALL application data:
+• All attendance records
+• All students
+• All subjects
+• Timetable
+• Class settings and quotas
+• Academic calendar
+
+This cannot be undone.`,
+        confirmLabel: 'Erase Everything',
+        danger: true,
+      });
+      if (!ok) return;
+      for (const store of ['attendance', 'students', 'subjects', 'timetable', 'meta', 'imports']) {
+        await DB.clearStore(store);
+      }
+      await loadCache();
+      showToast('Application reset to factory state.');
+      location.hash = '#/dashboard';
+      return;
+    }
+
+    if (action === 'save-calendar-status') {
+      const dt = btn.dataset.date || calendarState.date;
+      const sel = document.getElementById('cal-status-select');
+      const inp = document.getElementById('cal-reason-input');
+      const type = sel ? sel.value : 'NORMAL';
+      const reason = inp ? inp.value.trim() : '';
+
+      if (!cache.academicCalendar) cache.academicCalendar = {};
+      if (type === 'NORMAL') {
+        delete cache.academicCalendar[dt];
+      } else {
+        cache.academicCalendar[dt] = {
+          date: dt,
+          type,
+          reason: reason || Norm.getCalendarTypeMeta(type).label,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      await DB.setMeta('academicCalendar', cache.academicCalendar);
+      await loadCache();
+      if (window.SyncEngine && cache.syncConfig?.enabled) {
+        SyncEngine.sync({ force: true }).catch(() => {});
+      }
+      showToast(`Calendar status saved for ${Render.fmtDate(dt)}.`);
+      viewCalendarDay(dt);
+      return;
+    }
+
+    if (action === 'remove-calendar-status') {
+      const dt = btn.dataset.date || calendarState.date;
+      if (cache.academicCalendar && cache.academicCalendar[dt]) {
+        delete cache.academicCalendar[dt];
+        await DB.setMeta('academicCalendar', cache.academicCalendar);
+        await loadCache();
+        if (window.SyncEngine && cache.syncConfig?.enabled) {
+          SyncEngine.sync({ force: true }).catch(() => {});
+        }
+        showToast(`Restored ${Render.fmtDate(dt)} as normal working day.`);
+        viewCalendarDay(dt);
+      }
+      return;
+    }
+
     if (action === 'cancel-import') { importState = null; viewImport(); return; }
     if (action === 'commit-import') {
       if (!importState) return;
-      const result = await Importer.commitImport(importState.analysis, importState.planResult, {});
+      const skipHolidaysInput = document.getElementById('import-skip-holidays');
+      const skipHolidays = skipHolidaysInput ? skipHolidaysInput.checked : true;
+      const result = await Importer.commitImport(importState.analysis, importState.planResult, {}, { skipHolidays });
       await loadCache();
       if (window.SyncEngine) SyncEngine.autoSync();
       const resultBox = document.getElementById('import-result');

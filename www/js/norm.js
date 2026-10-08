@@ -462,6 +462,42 @@ const Norm = (() => {
     }
   }
 
+  // ---- Academic Calendar Helpers ------------------------------------
+  const CALENDAR_TYPES = {
+    NORMAL: { code: 'NORMAL', label: 'Normal Working Day', emoji: '📅', color: 'var(--text-muted)' },
+    GOVERNMENT_HOLIDAY: { code: 'GOVERNMENT_HOLIDAY', label: 'Government Holiday', emoji: '🏛️', color: 'var(--present)' },
+    COLLEGE_HOLIDAY: { code: 'COLLEGE_HOLIDAY', label: 'College Holiday', emoji: '🏫', color: '#a78bfa' },
+    CLASS_LEAVE: { code: 'CLASS_LEAVE', label: 'Class Leave', emoji: '🏖️', color: '#38bdf8' },
+    INTERNAL_EXAM: { code: 'INTERNAL_EXAM', label: 'Internal Examination', emoji: '📝', color: '#f59e0b' },
+    OTHER_NO_CLASS: { code: 'OTHER_NO_CLASS', label: 'Other No-Class Day', emoji: '⛔', color: '#ef4444' },
+  };
+
+  function getCalTypeCode(input) {
+    if (!input) return 'NORMAL';
+    if (typeof input === 'string') return input.toUpperCase();
+    return (input.type || input.code || 'NORMAL').toUpperCase();
+  }
+
+  function isHoliday(input) {
+    const code = getCalTypeCode(input);
+    return code === 'GOVERNMENT_HOLIDAY' || code === 'COLLEGE_HOLIDAY' || code === 'CLASS_LEAVE' || code === 'OTHER_NO_CLASS';
+  }
+
+  function isInternalExam(input) {
+    const code = getCalTypeCode(input);
+    return code === 'INTERNAL_EXAM';
+  }
+
+  function isNoClassDay(input) {
+    const code = getCalTypeCode(input);
+    return code !== 'NORMAL' && code in CALENDAR_TYPES;
+  }
+
+  function getCalendarTypeMeta(input) {
+    const code = getCalTypeCode(input);
+    return CALENDAR_TYPES[code] || CALENDAR_TYPES.NORMAL;
+  }
+
   return {
     rollNo,
     regNo,
@@ -479,6 +515,11 @@ const Norm = (() => {
     makeKey,
     resolveWinningRecord,
     cleanupAndMigrate,
+    CALENDAR_TYPES,
+    isHoliday,
+    isInternalExam,
+    isNoClassDay,
+    getCalendarTypeMeta,
   };
 })();
 
