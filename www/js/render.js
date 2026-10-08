@@ -387,6 +387,12 @@ const Render = (() => {
     <div class="content">
       <label style="margin-top:0">Date</label>
       <input type="date" id="mark-date" value="${d.date}" max="${d.today}" />
+      <div class="row between" style="margin:6px 0 12px;align-items:center">
+        <span class="small muted">Day: <b>${esc(d.dayName)}</b></span>
+        <a href="#/calendar/${d.date}" class="small" style="text-decoration:none;font-weight:600;color:var(--primary);display:inline-flex;align-items:center;gap:4px">
+          📅 Change Day Status (Leave / Exam) &rarr;
+        </a>
+      </div>
 
       ${isNoClass ? `
       <div class="card glow" style="border-left:4px solid ${calMeta.color};margin-top:14px">
@@ -480,9 +486,22 @@ const Render = (() => {
   }
 
   function markPeriod(d) {
+    const isNoClass = d.calendarEvent && Norm.isNoClassDay(d.calendarEvent.type);
+    const calMeta = isNoClass ? Norm.getCalendarTypeMeta(d.calendarEvent.type) : null;
     return `
     ${topbar(`${d.subjectName} · P${d.period}`, { back: true })}
     <div class="content">
+      ${isNoClass ? `
+      <div class="card glow" style="border-left:4px solid ${calMeta.color};margin-bottom:12px;padding:12px">
+        <div class="row between" style="align-items:center">
+          <div>
+            <div style="font-weight:700;color:${calMeta.color}">${calMeta.emoji} ${calMeta.label} Declared</div>
+            <div class="small muted" style="margin-top:2px">Attendance saved here is excluded from stats &amp; quotas unless restored in Calendar.</div>
+          </div>
+          <a href="#/calendar/${d.date}" class="btn sm" style="text-decoration:none">Calendar &rarr;</a>
+        </div>
+      </div>
+      ` : ''}
       <div class="row between" style="margin-bottom:10px">
         <span class="muted small">${esc(fmtDate(d.date))}</span>
         ${d.locked ? `<span class="badge muted">Locked</span>` : ''}
@@ -778,17 +797,35 @@ const Render = (() => {
       ` : ''}
 
       <div class="section-title">Recorded Periods for this Day (${d.periods.length})</div>
-      ${d.periods.length === 0 ? `<div class="card"><div class="empty small">No attendance recorded for this date.</div></div>` :
-      d.periods.map(p => `
-      <a href="#/mark/period/${d.date}/${p.period}/${encodeURIComponent(p.subjectCode)}" class="card" style="display:block;text-decoration:none;color:inherit;margin-bottom:8px">
-        <div class="row between">
-          <div><div class="name">P${p.period} — ${esc(p.subjectCode)}</div></div>
-          <div class="row" style="gap:6px">
-            <span class="badge present">${p.present} P</span>
-            <span class="badge absent">${p.absent} A</span>
+      ${d.periods.length === 0 ? `<div class="card"><div class="empty small">No attendance recorded for this date.</div></div>` : `
+        ${isNoClass ? `
+        <div class="card" style="border-left:4px solid var(--warn, #f59e0b);margin-bottom:12px">
+          <div style="font-weight:600;font-size:14px;color:var(--warn, #f59e0b)">⚠️ ${d.periods.length} Period(s) Marked on this Day (${d.totalRecords || 0} student records)</div>
+          <div class="small muted" style="margin-top:4px;line-height:1.4">
+            Because this date is set as <b>${currentMeta.label}</b>, these records are <b>automatically excluded</b> from total classes held, attendance %, and quotas (zero absences counted). You do not have to delete them unless you want to clean them up.
+          </div>
+          <div style="margin-top:10px">
+            <button class="btn sm danger" data-action="clear-day-attendance" data-date="${d.date}">
+              🗑️ Delete Marked Attendance Records for this Day
+            </button>
           </div>
         </div>
-      </a>`).join('')}
+        ` : ''}
+        ${d.periods.map(p => `
+        <a href="#/mark/period/${d.date}/${p.period}/${encodeURIComponent(p.subjectCode)}" class="card" style="display:block;text-decoration:none;color:inherit;margin-bottom:8px">
+          <div class="row between" style="align-items:center">
+            <div>
+              <div class="name">P${p.period} — ${esc(p.subjectCode)}</div>
+              ${isNoClass ? '<div class="sub" style="color:var(--warn, #f59e0b);font-size:11px">Excluded from % &amp; quotas (' + esc(currentMeta.label) + ')</div>' : ''}
+            </div>
+            <div class="row" style="gap:6px;align-items:center">
+              ${isNoClass ? '<span class="badge muted" style="font-size:11px">Excluded</span>' : ''}
+              <span class="badge present">${p.present} P</span>
+              <span class="badge absent">${p.absent} A</span>
+            </div>
+          </div>
+        </a>`).join('')}
+      `}
     </div>`;
   }
 

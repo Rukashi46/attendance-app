@@ -436,14 +436,15 @@
         status: rec ? rec.status : null,
       };
     });
-    markPeriodState = { date: normDate, period: normPeriod, code: canonicalCode, locked, rows };
-    view().innerHTML = Render.markPeriod({ date: normDate, period: normPeriod, subjectName: subject.name, locked, rows });
+    const calendarEvent = (cache.academicCalendar && cache.academicCalendar[normDate]) || null;
+    markPeriodState = { date: normDate, period: normPeriod, code: canonicalCode, locked, rows, calendarEvent };
+    view().innerHTML = Render.markPeriod({ date: normDate, period: normPeriod, subjectName: subject.name, locked, rows, calendarEvent });
   }
 
   function rerenderMarkPeriod() {
-    const { date, period, code, locked, rows } = markPeriodState;
+    const { date, period, code, locked, rows, calendarEvent } = markPeriodState;
     const subject = subjectByCode(code) || { code, name: code };
-    view().innerHTML = Render.markPeriod({ date, period, subjectName: subject.name, locked, rows });
+    view().innerHTML = Render.markPeriod({ date, period, subjectName: subject.name, locked, rows, calendarEvent });
   }
 
   async function viewMarkSession(date, session) {
@@ -554,15 +555,32 @@
 
   async function viewCalendarDay(date) {
     calendarState.date = date;
-    const stats = Calc.buildStats(cache.attendance, cache.academicCalendar);
-    const bd = Calc.dateBreakdown(stats, date);
     const currentEvent = (cache.academicCalendar && cache.academicCalendar[date]) || null;
     const dayName = Render.dayNameOf(date);
     const tt = cache.timetable.filter((t) => t.day === dayName).sort((a, b) => a.period - b.period);
+
+    // Extract all recorded periods for this day directly from cache.attendance
+    // (so marked periods are always visible even if the day is declared as a leave or internal exam)
+    const dayRecs = cache.attendance.filter((a) => Norm.date(a.date) === date && (a.status === 'P' || a.status === 'A'));
+    const periodMap = new Map();
+    for (const r of dayRecs) {
+      const p = Norm.period(r.period);
+      const sub = Norm.resolveSubjectCode(r.subjectCode, cache.subjects, cache.timetable) || r.subjectCode;
+      const key = `${p}|${sub}`;
+      if (!periodMap.has(key)) {
+        periodMap.set(key, { period: p, subjectCode: sub, present: 0, absent: 0 });
+      }
+      const entry = periodMap.get(key);
+      if (r.status === 'P') entry.present++;
+      else if (r.status === 'A') entry.absent++;
+    }
+    const periods = [...periodMap.values()].sort((a, b) => a.period - b.period);
+
     view().innerHTML = Render.calendarDay({
       date,
       currentEvent,
-      periods: bd ? bd.periods : [],
+      periods,
+      totalRecords: dayRecs.length,
       timetable: tt,
     });
   }
@@ -1164,6 +1182,26 @@ This cannot be undone.`,
         showToast(`Restored ${Render.fmtDate(dt)} as normal working day.`);
         viewCalendarDay(dt);
       }
+      return;
+    }
+
+    if (action === 'clear-day-attendance') {
+      const dt = btn.dataset.date || calendarState.date;
+      const count = cache.attendance.filter((a) => Norm.date(a.date) === dt).length;
+      const ok = await openConfirmModal({
+        title: 'Delete Marked Records?',
+        message: `Delete all ${count} attendance record(s) marked for ${Render.fmtDate(dt)}?\n\nThis permanently removes them from the database.`,
+        confirmLabel: 'Delete Records',
+        danger: true,
+      });
+      if (!ok) return;
+      await DB.deleteAttendanceByDate(dt);
+      await loadCache();
+      if (window.SyncEngine && cache.syncConfig?.enabled) {
+        SyncEngine.sync({ force: true }).catch(() => {});
+      }
+      showToast(`Deleted ${count} attendance record(s) for ${Render.fmtDate(dt)}.`);
+      viewCalendarDay(dt);
       return;
     }
 

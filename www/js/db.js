@@ -94,9 +94,18 @@ const DB = (() => {
     return rec ? rec.value : fallback;
   }
 
-  async function setMeta(key, value) {
-    return put('meta', { key, value });
+  async function deleteAttendanceByDate(date) {
+    const t = await tx(['attendance'], 'readwrite');
+    const os = t.objectStore('attendance');
+    const idx = os.index('date');
+    const req = idx.getAllKeys(date);
+    const keys = await reqToPromise(req);
+    keys.forEach((k) => os.delete(k));
+    return new Promise((resolve, reject) => {
+      t.oncomplete = () => resolve(keys.length);
+      t.onerror = () => reject(t.error);
+    });
   }
 
-  return { open, getAll, get, put, putMany, del, clearStore, getMeta, setMeta };
+  return { open, getAll, get, put, putMany, del, clearStore, getMeta, setMeta, deleteAttendanceByDate };
 })();
