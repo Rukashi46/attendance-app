@@ -620,10 +620,10 @@
 
   async function viewMonthlyStats() {
     const monthlyList = Calc.allMonthlyStats(cache.attendance, cache.threshold, cache.allocatedPeriods, cache.academicCalendar);
-    if (!monthlyState.selectedMonth && monthlyList.length > 0) {
-      monthlyState.selectedMonth = monthlyList[0].key;
+    if (!monthlyState.selectedMonth) {
+      monthlyState.selectedMonth = 'all';
     }
-    const selectedMonth = monthlyState.selectedMonth || (monthlyList[0] ? monthlyList[0].key : 'all');
+    const selectedMonth = monthlyState.selectedMonth || 'all';
     const selectedMonthData = monthlyList.find((m) => m.key === selectedMonth) || null;
     const studentMap = Object.fromEntries(cache.students.map((s) => [s.id, s]));
     const subjectNames = Object.fromEntries(cache.subjects.map((s) => [s.code, s.name]));
@@ -1299,7 +1299,7 @@ This cannot be undone.`,
       const skipHolidaysInput = document.getElementById('import-skip-holidays');
       const skipHolidays = skipHolidaysInput ? skipHolidaysInput.checked : true;
       const addLeavesInput = document.getElementById('import-add-detected-leaves');
-      const addDetectedLeaves = addLeavesInput ? addLeavesInput.checked : true;
+      const addDetectedLeaves = addLeavesInput ? addLeavesInput.checked : false;
       const result = await Importer.commitImport(importState.analysis, importState.planResult, {}, { skipHolidays, addDetectedLeaves });
       await loadCache();
       if (window.SyncEngine) SyncEngine.autoSync();

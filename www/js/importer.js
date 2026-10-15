@@ -45,21 +45,26 @@ const Importer = (() => {
     return null;
   }
 
-  function cell(ws, r, c) {
+  function cellMeta(ws, r, c) {
     const addr = XLSX.utils.encode_cell({ r: r - 1, c: c - 1 });
     const cellObj = ws[addr];
-    if (cellObj !== undefined && cellObj.v !== undefined) return cellObj.v;
+    if (cellObj !== undefined && (cellObj.v !== undefined || cellObj.w !== undefined)) return cellObj;
     if (ws && ws['!merges']) {
       const r0 = r - 1, c0 = c - 1;
       for (const m of ws['!merges']) {
         if (r0 >= m.s.r && r0 <= m.e.r && c0 >= m.s.c && c0 <= m.e.c) {
           const originAddr = XLSX.utils.encode_cell({ r: m.s.r, c: m.s.c });
           const originObj = ws[originAddr];
-          return originObj ? originObj.v : undefined;
+          return originObj || undefined;
         }
       }
     }
     return undefined;
+  }
+
+  function cell(ws, r, c) {
+    const cm = cellMeta(ws, r, c);
+    return cm ? cm.v : undefined;
   }
 
   function sheetRange(ws) {
@@ -73,12 +78,39 @@ const Importer = (() => {
     return v instanceof Date && !isNaN(v.getTime());
   }
 
-  function parseDateVal(v) {
-    if (isDate(v)) return v;
+  function parseDateVal(v, meta) {
+    if (!v && meta && meta.v !== undefined) v = meta.v;
+    if (!v && meta && meta.w !== undefined) v = meta.w;
+    if (!v && v !== 0) return null;
+
+    // 1. Numeric Excel date serial (e.g. 46204 -> 2026-07-01)
     if (typeof v === 'number' && v > 20000 && v < 60000) {
+      if (typeof XLSX !== 'undefined' && XLSX.SSF && XLSX.SSF.parse_date_code) {
+        const p = XLSX.SSF.parse_date_code(v);
+        if (p && p.y && p.m && p.d) {
+          return new Date(p.y, p.m - 1, p.d);
+        }
+      }
       const dt = new Date((v - 25569) * 86400 * 1000);
-      if (!isNaN(dt.getTime())) return dt;
+      return new Date(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate());
     }
+
+    // 2. Formatted date text (e.g. cell.w: "1-Jul", "7/1/26", "22-Sep-2026")
+    if (meta && typeof meta.w === 'string' && meta.w.trim()) {
+      const normW = (typeof Norm !== 'undefined' && Norm.date) ? Norm.date(meta.w) : meta.w;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(normW)) {
+        const [y, m, d] = normW.split('-').map(Number);
+        return new Date(y, m - 1, d);
+      }
+    }
+
+    // 3. Date object (with drift buffer to prevent 23:59:50 falling into previous day)
+    if (isDate(v)) {
+      const adjusted = new Date(v.getTime() + 60000);
+      return new Date(adjusted.getFullYear(), adjusted.getMonth(), adjusted.getDate());
+    }
+
+    // 4. String date
     if (typeof v === 'string' && v.trim()) {
       const s = v.trim();
       const normD = (typeof Norm !== 'undefined' && Norm.date) ? Norm.date(s) : s;
@@ -174,7 +206,7 @@ const Importer = (() => {
     // Helper to check if any columns further right have valid data
     function hasDataAhead(startCol) {
       for (let c = startCol; c <= c2; c++) {
-        if (parseDateVal(cell(ws, headerRow, c))) return true;
+        if (parseDateVal(cell(ws, headerRow, c), cellMeta(ws, headerRow, c))) return true;
         const pRaw = normUp(cell(ws, periodRow, c));
         if (PERIOD_RE.test(pRaw)) return true;
         for (let r = studentStartRow; r <= Math.min(r2, studentStartRow + 5); r++) {
@@ -185,14 +217,15 @@ const Importer = (() => {
       return false;
     }
 
-    // Build column definitions with forward-filled dates and merge awareness.
+    // Build column definitions with forward-filled dates.
     const columns = [];
     const detectedSheetLeaves = new Map(); // iso -> reason
     let lastDate = null;
     let blankStreak = 0;
 
     for (let c = c1 + 2; c <= c2; c++) {
-      const dateVal = parseDateVal(cell(ws, headerRow, c));
+      const hMeta = cellMeta(ws, headerRow, c);
+      const dateVal = parseDateVal(cell(ws, headerRow, c), hMeta);
       const periodVal = normUp(cell(ws, periodRow, c));
       if (dateVal) { lastDate = dateVal; }
 
@@ -200,13 +233,13 @@ const Importer = (() => {
       if (!lastDate || !m) {
         blankStreak++;
         if (lastDate) {
-          const merge = isCellMerged(ws, periodRow, c) || isCellMerged(ws, headerRow, c);
           const rawPeriod = norm(cell(ws, periodRow, c));
-          const isLeaveText = /LEAVE|HOLIDAY|OFF|CL|OD|EXAM|TEST|NO\s*CLASS|H\b/i.test(rawPeriod);
-          if (merge || isLeaveText) {
+          const isLeaveText = /LEAVE|HOLIDAY|OFF|CL|OD|EXAM|TEST|NO\s*CLASS\b/i.test(rawPeriod);
+          // Only explicit non-empty text matching leave keywords is noted — NEVER blank merged cells
+          if (isLeaveText && rawPeriod) {
             const iso = isoDate(lastDate);
             if (!detectedSheetLeaves.has(iso)) {
-              detectedSheetLeaves.set(iso, rawPeriod || 'Class Leave (blank merged cells in Excel)');
+              detectedSheetLeaves.set(iso, rawPeriod);
             }
           }
         }
@@ -251,14 +284,15 @@ const Importer = (() => {
         if (raw === 'P') status = 'P';
         else if (raw === 'A') status = 'A';
         else {
-          // Check if this student cell is inside a merged range (e.g. blank merged cells for leave)
-          const merge = isCellMerged(ws, stu.row, colDef.col);
+          // Cell is blank or merged: if explicit leave text is written (e.g. "OD", "CL", "EXAM"), record it
           const rawCell = norm(cell(ws, stu.row, colDef.col));
-          const isLeaveText = /LEAVE|HOLIDAY|OFF|CL|OD|EXAM|NO\s*CLASS|H\b/i.test(rawCell);
-          if ((merge || isLeaveText) && !detectedSheetLeaves.has(iso)) {
-            detectedSheetLeaves.set(iso, rawCell || 'Class Leave (blank merged cells in Excel)');
+          const isLeaveText = /LEAVE|HOLIDAY|OFF|CL|OD|EXAM|NO\s*CLASS\b/i.test(rawCell);
+          if (isLeaveText && rawCell && !detectedSheetLeaves.has(iso)) {
+            detectedSheetLeaves.set(iso, rawCell);
           }
-          continue; // blank / merged / leave -> NEVER counted as P or A
+          // Blank / merged cells without P or A simply mean attendance was not recorded for this student/period.
+          // NEVER counted as Absent or Present, and NEVER misread as whole-class leaves.
+          continue;
         }
 
         dateStudentAttendance.set(iso, (dateStudentAttendance.get(iso) || 0) + 1);
@@ -272,13 +306,6 @@ const Importer = (() => {
           subjectCode: sheetName.trim(),
           status,
         });
-      }
-    }
-
-    // If on any date, columns were defined but 0 students had P/A records, it is an undeclared leave day!
-    for (const [iso, count] of dateStudentAttendance.entries()) {
-      if (count === 0 && !detectedSheetLeaves.has(iso)) {
-        detectedSheetLeaves.set(iso, 'Class Leave (blank merged cells in Excel)');
       }
     }
 
@@ -477,16 +504,16 @@ const Importer = (() => {
     const addDetectedLeaves = options.addDetectedLeaves !== false;
     const filterHolidays = (list) => skipHolidays ? list.filter((r) => !r.isHoliday) : list;
 
-    // 0. Auto-register recognized leaves in academic calendar
+    // 0. Auto-register recognized leaves in academic calendar (only explicit text leaves, never blank merged cells)
     if (addDetectedLeaves && detectedLeaves && detectedLeaves.length > 0) {
       const cal = (await DB.getMeta('academicCalendar', {})) || {};
       let calChanged = false;
       for (const l of detectedLeaves) {
-        if (!cal[l.date]) {
+        if (!cal[l.date] && l.reason && !/blank merged cells/i.test(l.reason)) {
           cal[l.date] = {
             date: l.date,
             type: l.type || 'CLASS_LEAVE',
-            reason: l.reason || 'Class Leave (blank merged cells in Excel)',
+            reason: l.reason,
             updatedAt: now,
           };
           calChanged = true;
@@ -597,7 +624,7 @@ const Importer = (() => {
 
   async function readWorkbookFromFile(file) {
     const buf = await file.arrayBuffer();
-    return XLSX.read(buf, { type: 'array', cellDates: true });
+    return XLSX.read(buf, { type: 'array', cellDates: false });
   }
 
   return { analyze, buildImportPlan, commitImport, readWorkbookFromFile, nameKey, normCode };

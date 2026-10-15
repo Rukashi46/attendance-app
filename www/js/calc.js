@@ -321,7 +321,7 @@ const Calc = (() => {
         monthKeys.add(r.date.slice(0, 7));
       }
     }
-    const sortedKeys = [...monthKeys].sort((a, b) => b.localeCompare(a)); // latest first
+    const sortedKeys = [...monthKeys].sort((a, b) => a.localeCompare(b)); // chronological: July, August, etc.
     return sortedKeys.map((key) => {
       const [yStr, mStr] = key.split('-');
       const year = parseInt(yStr, 10);
@@ -423,7 +423,7 @@ const Calc = (() => {
       else sub.a++;
     }
 
-    const sortedKeys = [...monthMap.keys()].sort((a, b) => b.localeCompare(a));
+    const sortedKeys = [...monthMap.keys()].sort((a, b) => a.localeCompare(b));
     return sortedKeys.map((key) => {
       const [yStr, mStr] = key.split('-');
       const year = parseInt(yStr, 10);
@@ -480,7 +480,7 @@ const Calc = (() => {
       mData.periods.add(`${r.date}|${r.period}`);
     }
 
-    const sortedKeys = [...monthMap.keys()].sort((a, b) => b.localeCompare(a));
+    const sortedKeys = [...monthMap.keys()].sort((a, b) => a.localeCompare(b));
     return sortedKeys.map((key) => {
       const [yStr, mStr] = key.split('-');
       const year = parseInt(yStr, 10);

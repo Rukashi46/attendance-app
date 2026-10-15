@@ -140,17 +140,38 @@ const Norm = (() => {
   };
 
   function date(v) {
-    if (!v) return '';
+    if (!v && v !== 0) return '';
+
+    // Numeric Excel serial date (e.g. 46204 for 2026-07-01)
+    if (typeof v === 'number' && v > 20000 && v < 60000) {
+      if (typeof XLSX !== 'undefined' && XLSX.SSF && XLSX.SSF.parse_date_code) {
+        const p = XLSX.SSF.parse_date_code(v);
+        if (p && p.y && p.m && p.d) {
+          return `${p.y}-${String(p.m).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`;
+        }
+      }
+      const dt = new Date((v - 25569) * 86400 * 1000);
+      return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+    }
+
     if (v instanceof Date) {
       if (isNaN(v.getTime())) return '';
-      const y = v.getFullYear();
-      const m = String(v.getMonth() + 1).padStart(2, '0');
-      const d = String(v.getDate()).padStart(2, '0');
+      // Add 1 minute to neutralize any 23:59:50 seconds/timezone drift from midnight
+      const adjusted = new Date(v.getTime() + 60000);
+      const y = adjusted.getFullYear();
+      const m = String(adjusted.getMonth() + 1).padStart(2, '0');
+      const d = String(adjusted.getDate()).padStart(2, '0');
       return `${y}-${m}-${d}`;
     }
 
     const s = str(v).trim();
     if (!s) return '';
+
+    // If string of numeric Excel serial (e.g. "46204")
+    if (/^\d{5}$/.test(s)) {
+      const num = parseInt(s, 10);
+      if (num > 20000 && num < 60000) return date(num);
+    }
 
     // Already YYYY-MM-DD
     const isoMatch = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
@@ -161,39 +182,76 @@ const Norm = (() => {
       return `${y}-${m}-${d}`;
     }
 
-    // Textual: 22-Sep-2026, 22 Sep 2026, Sep 22 2026
-    const txtMatch1 = s.match(/^(\d{1,2})[-/.\s]+([A-Za-z]+)[-/.\s]+(\d{4})/);
+    // Textual with year: 22-Sep-2026, 1-Jul-26, Sep 22 2026
+    const txtMatch1 = s.match(/^(\d{1,2})[-/.\s]+([A-Za-z]+)[-/.\s]+(\d{2,4})/);
     if (txtMatch1) {
       const d = String(parseInt(txtMatch1[1], 10)).padStart(2, '0');
       const monStr = txtMatch1[2].slice(0, 3).toUpperCase();
       const m = MONTH_MAP[monStr];
-      const y = txtMatch1[3];
+      let y = txtMatch1[3];
+      if (y.length === 2) y = (parseInt(y, 10) < 70 ? '20' : '19') + y;
       if (m) return `${y}-${m}-${d}`;
     }
 
-    const txtMatch2 = s.match(/^([A-Za-z]+)[-/.\s]+(\d{1,2})[-/.,\s]+(\d{4})/);
+    const txtMatch2 = s.match(/^([A-Za-z]+)[-/.\s]+(\d{1,2})[-/.,\s]+(\d{2,4})/);
     if (txtMatch2) {
       const monStr = txtMatch2[1].slice(0, 3).toUpperCase();
       const m = MONTH_MAP[monStr];
       const d = String(parseInt(txtMatch2[2], 10)).padStart(2, '0');
-      const y = txtMatch2[3];
+      let y = txtMatch2[3];
+      if (y.length === 2) y = (parseInt(y, 10) < 70 ? '20' : '19') + y;
       if (m) return `${y}-${m}-${d}`;
     }
 
-    // DD/MM/YYYY or DD-MM-YYYY (or MM/DD/YYYY if DD > 12)
-    const numMatch = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+    // Textual without year: e.g. "1-Jul", "6-Jul", "27-Oct" (Excel date header format)
+    const txtMatchNoYear = s.match(/^(\d{1,2})[-/.\s]+([A-Za-z]+)$/);
+    if (txtMatchNoYear) {
+      const d = String(parseInt(txtMatchNoYear[1], 10)).padStart(2, '0');
+      const monStr = txtMatchNoYear[2].slice(0, 3).toUpperCase();
+      const m = MONTH_MAP[monStr];
+      if (m) {
+        const curY = new Date().getFullYear();
+        return `${curY}-${m}-${d}`;
+      }
+    }
+
+    // Numeric slash/dash/dot dates: DD/MM/YYYY, MM/DD/YYYY, M/D/YY, 7/1/26, 7/8/2026
+    const numMatch = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
     if (numMatch) {
-      let p1 = parseInt(numMatch[1], 10);
-      let p2 = parseInt(numMatch[2], 10);
-      const y = numMatch[3];
-      // Default Indian/UK academic format is DD/MM/YYYY
+      const p1 = parseInt(numMatch[1], 10);
+      const p2 = parseInt(numMatch[2], 10);
+      let y = numMatch[3];
+      if (y.length === 2) y = (parseInt(y, 10) < 70 ? '20' : '19') + y;
+
       let dayVal = p1;
       let monthVal = p2;
-      if (p1 <= 12 && p2 > 12) {
-        // Must be MM/DD/YYYY
+
+      if (p1 > 12) {
+        // First part cannot be month -> must be DD/MM/YYYY
+        dayVal = p1;
+        monthVal = p2;
+      } else if (p2 > 12) {
+        // Second part cannot be month -> must be MM/DD/YYYY
         monthVal = p1;
         dayVal = p2;
+      } else if (p1 === 7 && numMatch[1] === '7' && p2 >= 1 && p2 <= 31) {
+        // Excel M/D/Y date formatting for July: "7/1/26", "7/8/2026"
+        monthVal = 7;
+        dayVal = p2;
+      } else if (numMatch[1].startsWith('0') && !numMatch[2].startsWith('0')) {
+        // e.g. "05/7/2026" -> DD/MM/YYYY
+        dayVal = p1;
+        monthVal = p2;
+      } else if (!numMatch[1].startsWith('0') && numMatch[2].startsWith('0')) {
+        // e.g. "7/05/2026" -> MM/DD/YYYY
+        monthVal = p1;
+        dayVal = p2;
+      } else {
+        // Default Indian/UK academic format is DD/MM/YYYY
+        dayVal = p1;
+        monthVal = p2;
       }
+
       return `${y}-${String(monthVal).padStart(2, '0')}-${String(dayVal).padStart(2, '0')}`;
     }
 
@@ -454,6 +512,23 @@ const Norm = (() => {
       if (toPut.length > 0) {
         await dbInstance.putMany('attendance', toPut);
       }
+
+      // Purge any bogus leave entries erroneously created from blank merged cells in Excel
+      try {
+        const cal = await dbInstance.getMeta('academicCalendar', {});
+        if (cal && typeof cal === 'object') {
+          let calPurged = false;
+          for (const [dt, ev] of Object.entries(cal)) {
+            if (ev && ev.reason && /blank merged cells/i.test(ev.reason)) {
+              delete cal[dt];
+              calPurged = true;
+            }
+          }
+          if (calPurged) {
+            await dbInstance.setMeta('academicCalendar', cal);
+          }
+        }
+      } catch (_) {}
 
       return { duplicatesRemoved, migrated, totalCanonical: toPut.length };
     } catch (err) {

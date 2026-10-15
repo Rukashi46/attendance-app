@@ -1233,16 +1233,16 @@ const Render = (() => {
       <div class="row between small" style="margin-bottom:4px"><span>Conflicts (manual vs import)</span><b style="color:${r.potentialConflicts?'var(--absent)':'inherit'}">${r.potentialConflicts}</b></div>
       ${r.detectedLeaves && r.detectedLeaves.length > 0 ? `
       <div class="card" style="margin:10px 0;border-left:4px solid var(--present);background:rgba(52,211,153,0.08)">
-        <div style="font-weight:700;color:var(--present)">🍃 Leaves Recognized from Excel (${r.detectedLeaves.length})</div>
+        <div style="font-weight:700;color:var(--present)">🍃 Explicit Leaves Recognized from Excel (${r.detectedLeaves.length})</div>
         <div class="small" style="margin-top:4px">
-          The following date(s) have blank merged cells or leave markers and will be treated as non-class leave days:
+          The following date(s) contain explicit leave markers (e.g. Leave / Holiday / Exam):
           <div style="margin-top:6px;line-height:1.6">
             ${r.detectedLeaves.map(l => `&bull; <b>${fmtDate(l.date)}</b> &middot; <span class="muted">${esc(l.reason)}</span>`).join('<br/>')}
           </div>
         </div>
         <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;cursor:pointer">
-          <input type="checkbox" id="import-add-detected-leaves" checked style="width:auto;margin:0" />
-          Save these dates as Class Leaves in Academic Calendar (Recommended)
+          <input type="checkbox" id="import-add-detected-leaves" style="width:auto;margin:0" />
+          Save these dates as Class Leaves in Academic Calendar (Optional)
         </label>
       </div>` : ''}
       ${r.holidaySkippedCount ? `
