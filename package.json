@@ -7,7 +7,8 @@
     "start": "serve -l 3001 www",
     "postinstall": "node scripts/copy-xlsx.js",
     "sync": "npx cap sync android",
-    "build:apk": "npx cap sync android && cd android && .\\gradlew assembleDebug",
+    "build": "npm run build:apk",
+    "build:apk": "npx cap sync android && cd android && .\\gradlew assembleDebug && cd .. && node -e \"require('fs').copyFileSync('android/app/build/outputs/apk/debug/app-debug.apk', 'CR-Attendance.apk')\"",
     "open:android": "npx cap open android",
     "add:android": "npx cap add android"
   },
