@@ -1052,7 +1052,12 @@
         danger: true,
       });
       if (!ok) return;
-      await DB.del('students', btn.dataset.id);
+      const studentId = btn.dataset.id;
+      await DB.del('students', studentId);
+      cache.students = cache.students.filter((s) => s.id !== studentId);
+      if (window.SyncEngine && cache.syncConfig?.enabled) {
+        await SyncEngine.pushNow().catch(() => {});
+      }
       await loadCache();
       showToast('Student removed.', 'success');
       location.hash = '#/students';
@@ -1106,12 +1111,27 @@ You can import a fresh Excel attendance file afterwards.`,
         danger: true,
       });
       if (!ok) return;
+
+      // 1. Clear local IndexedDB attendance store and reset import metadata
       await DB.clearStore('attendance');
       await DB.setMeta('lastImport', null);
-      await loadCache();
-      if (window.SyncEngine && cache.syncConfig?.enabled) {
-        SyncEngine.sync({ force: true }).catch(() => {});
+      const nowIso = new Date().toISOString();
+      await DB.setMeta('attendanceClearedAt', nowIso);
+
+      // 2. Clear in-memory attendance cache
+      cache.attendance = [];
+      cache.lastImport = null;
+
+      // 3. Push cleared state directly to Supabase cloud sync if configured
+      if (window.SyncEngine) {
+        if (typeof SyncEngine.pushClearedAttendance === 'function') {
+          await SyncEngine.pushClearedAttendance().catch((err) => console.warn('Sync push cleared attendance error:', err));
+        } else if (cache.syncConfig?.enabled) {
+          await SyncEngine.pushNow().catch((err) => console.warn('Sync push error:', err));
+        }
       }
+
+      await loadCache();
       showToast('Attendance data cleared successfully (0 records).');
       viewSettings();
       return;
@@ -1127,18 +1147,85 @@ You can import a fresh Excel attendance file afterwards.`,
 • Timetable
 • Class settings and quotas
 • Academic calendar
+• Cloud synchronization data
 
 This cannot be undone.`,
         confirmLabel: 'Erase Everything',
         danger: true,
       });
       if (!ok) return;
-      for (const store of ['attendance', 'students', 'subjects', 'timetable', 'meta', 'imports']) {
-        await DB.clearStore(store);
+
+      // 1. Wipe remote database in Supabase and cancel background sync polling
+      if (window.SyncEngine && typeof SyncEngine.factoryReset === 'function') {
+        try {
+          await SyncEngine.factoryReset();
+        } catch (e) {
+          console.warn('SyncEngine factoryReset error:', e);
+        }
       }
-      await loadCache();
-      showToast('Application reset to factory state.');
+
+      // 2. Clear all local IndexedDB object stores
+      try {
+        await DB.clearAll();
+      } catch (e) {
+        console.warn('DB clearAll error:', e);
+        for (const store of ['attendance', 'students', 'subjects', 'timetable', 'meta', 'imports']) {
+          await DB.clearStore(store).catch(() => {});
+        }
+      }
+
+      // 3. Delete and recreate the IndexedDB database to guarantee a completely fresh state
+      try {
+        await DB.deleteDatabase();
+        await DB.open();
+      } catch (e) {
+        console.warn('DB deleteDatabase error:', e);
+      }
+
+      // 4. Wipe browser web storage
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.clear();
+        if (typeof sessionStorage !== 'undefined') sessionStorage.clear();
+      } catch (e) {}
+
+      // 5. Reset all in-memory application cache to clean initial defaults
+      _hasMigratedAttendance = false;
+      cache = {
+        students: [],
+        subjects: [],
+        timetable: [],
+        attendance: [],
+        threshold: 75,
+        theme: 'system',
+        classInfo: {},
+        lastImport: null,
+        allocatedPeriods: {},
+        academicCalendar: {},
+        syncConfig: {
+          enabled: false,
+          syncKey: '',
+          supabaseUrl: 'https://dnslnjlpkshmaiwkbjuu.supabase.co',
+          supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRuc2xuamxwa3NobWFpd2tianV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNTAxNTUsImV4cCI6MjEwNTYyNjE1NX0.pv1x2Rqe0eFuODCeqcG2Sgbn17ZYZq2WNioGRd6MidM',
+          autoSync: true,
+        },
+      };
+
+      studentsState.query = '';
+      studentsState.sort = 'name';
+      markHomeState.date = todayIso();
+      calendarState.date = todayIso();
+      monthlyState.selectedMonth = null;
+      monthlyState.monthlyStudentFilter = 'all';
+      lowAttThreshold = null;
+      markPeriodState = null;
+      markSessionState = null;
+      importState = null;
+      backupPending = false;
+
+      applyTheme();
+      showToast('Application and database reset to factory state.');
       location.hash = '#/dashboard';
+      dispatch();
       return;
     }
 
@@ -1196,10 +1283,11 @@ This cannot be undone.`,
       });
       if (!ok) return;
       await DB.deleteAttendanceByDate(dt);
-      await loadCache();
+      cache.attendance = cache.attendance.filter((a) => Norm.date(a.date) !== dt);
       if (window.SyncEngine && cache.syncConfig?.enabled) {
-        SyncEngine.sync({ force: true }).catch(() => {});
+        await SyncEngine.pushNow().catch(() => {});
       }
+      await loadCache();
       showToast(`Deleted ${count} attendance record(s) for ${Render.fmtDate(dt)}.`);
       viewCalendarDay(dt);
       return;

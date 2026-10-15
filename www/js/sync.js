@@ -221,6 +221,14 @@ const SyncEngine = (() => {
 
     // Attendance — merge canonically; prefer newer updates
     if (Array.isArray(remote.attendance)) {
+      if (remote.meta && remote.meta.attendanceClearedAt) {
+        const localClearedAt = await DB.getMeta('attendanceClearedAt', null);
+        if (!localClearedAt || remote.meta.attendanceClearedAt > localClearedAt) {
+          await DB.clearStore('attendance');
+          await DB.setMeta('attendanceClearedAt', remote.meta.attendanceClearedAt);
+          await DB.setMeta('lastImport', null);
+        }
+      }
       const local = await DB.getAll('attendance');
       const localMap = new Map();
       for (const l of local) {
@@ -369,6 +377,97 @@ const SyncEngine = (() => {
     }, 25000);
   }
 
+  // Push local data directly without pulling first (avoids restoring deleted items)
+  async function pushNow() {
+    if (!_isFullyConfigured()) return { success: false, message: 'Sync not configured' };
+    if (!navigator.onLine) {
+      status = 'offline';
+      notify();
+      return { success: false, message: 'Device is offline' };
+    }
+    status = 'syncing';
+    notify();
+    try {
+      const unified = await gatherLocalData();
+      await _sbPush(unified);
+      syncConfig.lastSync = new Date().toISOString();
+      await DB.setMeta('syncConfig', syncConfig);
+      status = 'synced';
+      notify();
+      return { success: true };
+    } catch (err) {
+      console.warn('Sync push error:', err);
+      status = 'error';
+      notify();
+      return { success: false, message: String(err.message || err) };
+    }
+  }
+
+  // Push empty attendance state directly to cloud database to permanently clear records
+  async function pushClearedAttendance() {
+    if (!_isFullyConfigured()) return { success: false };
+    if (!navigator.onLine) return { success: false };
+    status = 'syncing';
+    notify();
+    try {
+      const unified = await gatherLocalData();
+      unified.attendance = [];
+      const now = new Date().toISOString();
+      unified.timestamp = now;
+      if (!unified.meta) unified.meta = {};
+      unified.meta.attendanceClearedAt = now;
+      unified.meta.lastImport = null;
+      await _sbPush(unified);
+      syncConfig.lastSync = now;
+      await DB.setMeta('syncConfig', syncConfig);
+      await DB.setMeta('attendanceClearedAt', now);
+      status = 'synced';
+      notify();
+      return { success: true };
+    } catch (err) {
+      console.warn('pushClearedAttendance error:', err);
+      status = 'error';
+      notify();
+      return { success: false };
+    }
+  }
+
+  // Factory reset: completely erase remote cloud data, stop timers, and reset sync configuration
+  async function factoryReset() {
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+    if (syncConfig.syncKey && syncConfig.supabaseUrl) {
+      try {
+        const base = syncConfig.supabaseUrl.replace(/\/$/, '');
+        const delUrl = base + '/rest/v1/sync_data?sync_key=eq.' + encodeURIComponent(syncConfig.syncKey);
+        const res = await fetch(delUrl, {
+          method: 'DELETE',
+          headers: _sbHeaders(),
+        });
+        if (!res.ok) {
+          // If DELETE method is blocked by Supabase RLS, overwrite with empty payload
+          await _sbPush({
+            version: 2,
+            syncKey: syncConfig.syncKey,
+            timestamp: new Date().toISOString(),
+            students: [],
+            subjects: [],
+            timetable: [],
+            attendance: [],
+            meta: {},
+          });
+        }
+      } catch (err) {
+        console.warn('Error clearing remote Supabase room data:', err);
+      }
+    }
+    syncConfig = { ...DEFAULTS };
+    status = 'unconfigured';
+    notify();
+  }
+
   // Event listeners
   function init() {
     window.addEventListener('online', () => {
@@ -407,8 +506,21 @@ const SyncEngine = (() => {
     loadConfig();
   }
 
-  return { init, getStatus, loadConfig, saveConfig, syncNow, autoSync, onStatusChange };
+  return {
+    init,
+    getStatus,
+    loadConfig,
+    saveConfig,
+    syncNow,
+    sync: syncNow,
+    pushNow,
+    pushClearedAttendance,
+    factoryReset,
+    autoSync,
+    onStatusChange,
+  };
 })();
 
 // Expose to window so app.js window.SyncEngine checks work.
 window.SyncEngine = SyncEngine;
+

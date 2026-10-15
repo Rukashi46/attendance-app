@@ -86,12 +86,58 @@ const DB = (() => {
 
   async function clearStore(store) {
     const t = await tx([store], 'readwrite');
-    return reqToPromise(t.objectStore(store).clear());
+    const os = t.objectStore(store);
+    os.clear();
+    return new Promise((resolve, reject) => {
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+    });
+  }
+
+  async function clearAll() {
+    const db = await open();
+    const names = Array.from(db.objectStoreNames);
+    if (names.length === 0) return;
+    const t = db.transaction(names, 'readwrite');
+    for (const name of names) {
+      t.objectStore(name).clear();
+    }
+    return new Promise((resolve, reject) => {
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+    });
+  }
+
+  async function close() {
+    if (dbp) {
+      try {
+        const db = await dbp;
+        db.close();
+      } catch (e) {}
+      dbp = null;
+    }
+  }
+
+  async function deleteDatabase() {
+    await close();
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.deleteDatabase(DB_NAME);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+      req.onblocked = () => {
+        console.warn('IndexedDB delete blocked');
+        resolve(false);
+      };
+    });
   }
 
   async function getMeta(key, fallback = null) {
     const rec = await get('meta', key);
     return rec ? rec.value : fallback;
+  }
+
+  async function setMeta(key, value) {
+    return put('meta', { key, value });
   }
 
   async function deleteAttendanceByDate(date) {
@@ -107,5 +153,24 @@ const DB = (() => {
     });
   }
 
-  return { open, getAll, get, put, putMany, del, clearStore, getMeta, setMeta, deleteAttendanceByDate };
+  return {
+    open,
+    close,
+    getAll,
+    get,
+    put,
+    putMany,
+    del,
+    clearStore,
+    clearAll,
+    deleteDatabase,
+    getMeta,
+    setMeta,
+    deleteAttendanceByDate,
+  };
 })();
+
+if (typeof window !== 'undefined') {
+  window.DB = DB;
+}
+
